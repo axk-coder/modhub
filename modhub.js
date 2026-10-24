@@ -20,18 +20,13 @@
     let mods = [];
     let selectedMod = null;
     let loadedMods = new Map();
-    let purchasedMods = new Set();
     let showActiveOnly = false;
     let activeSession = null;
     let currentUserEmail = null;
     let currentPlayFabId = null;
     let currentUsername = "";
-    let currentBalance = 0;
-    let isUploadMode = false;
-    let isEditMode = false;
     let isUserAdmin = false;
-    let isSidebarOpen = false;
-    let activeView = "mods";
+    let activeTab = "mods";
     let searchQuery = "";
     let selectedCategory = "all";
 
@@ -316,20 +311,17 @@ ${rawCode}
         currentUserEmail = null;
         currentPlayFabId = null;
         currentUsername = "";
-        currentBalance = 0;
         isUserAdmin = false;
-        purchasedMods.clear();
     }
 
     async function loginWithCustomId(customId, username) {
-        if (!customId || !customId.trim()) throw new Error("Hardware ID / Device ID required.");
-        const cleanId = customId.trim();
+        const targetId = (customId && customId.trim()) ? customId.trim() : getOrCreateHardwareId();
         const res = await fetch(PLAYFAB_LOGIN_CUSTOM_ID_URL, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
                 TitleId: PLAYFAB_TITLE_ID,
-                CustomId: cleanId,
+                CustomId: targetId,
                 CreateAccount: true,
                 InfoRequestParameters: { GetUserAccountInfo: true }
             })
@@ -345,7 +337,7 @@ ${rawCode}
         const result = data.data;
         let dispName = result.InfoResultPayload?.AccountInfo?.TitleInfo?.DisplayName ||
                        result.InfoResultPayload?.AccountInfo?.Username ||
-                       cleanId;
+                       targetId;
 
         if (username && username.trim() && username.trim() !== dispName) {
             const trimmedName = username.trim();
@@ -365,7 +357,7 @@ ${rawCode}
             titleId: PLAYFAB_TITLE_ID,
             sessionTicket: result.SessionTicket,
             playFabId: result.PlayFabId,
-            customId: cleanId,
+            customId: targetId,
             username: dispName,
             loggedInAt: new Date().toISOString()
         };
@@ -400,23 +392,6 @@ ${rawCode}
         currentUserEmail = email;
         currentPlayFabId = result.PlayFabId;
         currentUsername = username;
-        saveSession(session);
-        startBanPolling();
-        return session;
-    }
-
-    async function registerWithEmail(email, password, username) {
-        const payload = { TitleId: PLAYFAB_TITLE_ID, Email: email, Password: password, RequireBothUsernameAndEmail: false };
-        if (username && username.trim().length > 0) payload.Username = username.trim();
-        const res = await fetch(PLAYFAB_REGISTER_URL, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
-        const data = await res.json();
-        if (!res.ok || data.error) throw new Error(data.errorMessage || `HTTP ${res.status}`);
-        const result = data.data;
-        const session = { titleId: PLAYFAB_TITLE_ID, sessionTicket: result.SessionTicket, playFabId: result.PlayFabId, email: email, username: result.Username || username || "", loggedInAt: new Date().toISOString() };
-        activeSession = session;
-        currentUserEmail = email;
-        currentPlayFabId = result.PlayFabId;
-        currentUsername = session.username;
         saveSession(session);
         startBanPolling();
         return session;
@@ -470,17 +445,17 @@ ${rawCode}
         hubWindow.classList.add("banned");
         hubWindow.innerHTML = `
             <div class="mod-hub-header">
-                <div><span style="font-size: 14px; font-weight: bold; color: #fff;">Account Suspended</span></div>
+                <span class="mod-hub-brand">ACCOUNT SUSPENDED</span>
                 <button class="mod-hub-close" id="modHubClose">&times;</button>
             </div>
             <div class="mod-hub-auth-container">
-                <div class="mod-hub-auth-card" style="text-align: center; border-color: #666;">
-                    <h2 style="font-size: 18px; color: #eee; margin: 0 0 10px 0;">Access Suspended</h2>
-                    <div style="background: #181818; border: 1px solid #333; border-radius: 4px; padding: 12px; margin-bottom: 12px; text-align: left;">
-                        <div style="font-size: 11px; color: #aaa; margin-bottom: 4px;">Reason:</div>
-                        <div style="font-size: 12px; color: #fff; font-weight: bold;">${escapeHtml(reason)}</div>
-                        <div style="font-size: 11px; color: #aaa; margin-top: 8px; margin-bottom: 4px;">Duration:</div>
-                        <div style="font-size: 12px; color: #fff; font-weight: bold;">${escapeHtml(timeLeft)}</div>
+                <div class="mod-hub-auth-card" style="text-align: center;">
+                    <div style="font-size: 16px; font-weight: bold; margin-bottom: 12px; color: #fff;">Access Suspended</div>
+                    <div style="background: #111; border: 1px solid #282828; border-radius: 6px; padding: 12px; margin-bottom: 16px; text-align: left;">
+                        <div style="font-size: 11px; color: #888;">Reason:</div>
+                        <div style="font-size: 12px; color: #fff; font-weight: bold; margin-top: 2px;">${escapeHtml(reason)}</div>
+                        <div style="font-size: 11px; color: #888; margin-top: 8px;">Duration:</div>
+                        <div style="font-size: 12px; color: #fff; font-weight: bold; margin-top: 2px;">${escapeHtml(timeLeft)}</div>
                     </div>
                     <button class="mod-hub-auth-submit-btn" id="mh-ban-dismiss" style="width: 100%;">Close</button>
                 </div>
@@ -511,13 +486,13 @@ ${rawCode}
     function closeHubWindow() {
         if (!hubWindow) return;
         hubWindow.classList.remove("show");
-        setTimeout(() => { if (hubWindow) { hubWindow.remove(); hubWindow = null; } }, 200);
+        setTimeout(() => { if (hubWindow) { hubWindow.remove(); hubWindow = null; } }, 150);
     }
 
     function setupDragging(header, windowElement) {
         let dragging = false, offsetX = 0, offsetY = 0;
         header.addEventListener("pointerdown", (e) => {
-            if (e.target.id === "modHubClose" || e.target.id === "mh-logout-btn" || e.target.id === "mh-toggle-upload-btn") return;
+            if (e.target.closest("button") || e.target.closest("a") || e.target.closest("input")) return;
             dragging = true;
             const rect = windowElement.getBoundingClientRect();
             offsetX = e.clientX - rect.left;
@@ -537,7 +512,7 @@ ${rawCode}
 
     registerMod({
         name: "Mod Hub",
-        version: "2.4.0",
+        version: "2.5.0",
         init() {
             injectStyles();
             createToolbarMenu();
@@ -592,11 +567,8 @@ ${rawCode}
         const result = await executeCloudScript("getModList");
         if (!result || !result.success) throw new Error(result?.error || "Failed to retrieve mod list.");
         isUserAdmin = (result.isAdmin === true);
-        currentBalance = result.balance || 0;
         currentPlayFabId = result.playFabId || currentPlayFabId;
         if (result.username) currentUsername = result.username;
-        purchasedMods.clear();
-        if (Array.isArray(result.purchasedMods)) result.purchasedMods.forEach(fn => purchasedMods.add(fn));
         updateHeaderDisplay();
         return parseJsonl(result.data);
     }
@@ -609,12 +581,10 @@ ${rawCode}
             const viewEl = document.getElementById("mh-view-count");
             if (viewEl) viewEl.textContent = `Views: ${result.views}`;
         }
-        return { code: result.code, locked: !!result.locked };
+        return result.code;
     }
 
     function updateHeaderDisplay() {
-        const balEl = document.getElementById("mh-balance-display");
-        if (balEl) balEl.textContent = `${currentBalance} MH`;
         const userLabel = document.getElementById("mh-user-display");
         if (userLabel) {
             userLabel.innerHTML = `${escapeHtml(currentUsername || currentUserEmail || "Connected")} ${isUserAdmin ? '<b style="color:#ffffff;">(ADMIN)</b>' : ''}`;
@@ -637,8 +607,8 @@ ${rawCode}
         toolbarMenu.id = "mod-hub-menu";
         toolbarMenu.innerHTML = `
             <summary>Mod Hub</summary>
-            <div class="toolbar-category-dropdown" style="padding: 10px; min-width: 160px; background: #1a1a1a; border: 1px solid #333; border-radius: 4px; box-shadow: 0 4px 12px rgba(0,0,0,0.6);">
-                <button id="mh-open-btn" style="width:100%; text-align:center; padding: 6px 12px; background: #2c2c2c; border: 1px solid #444; color:#fff; font-weight:bold; border-radius:4px; cursor:pointer;">Open Mod Hub</button>
+            <div class="toolbar-category-dropdown" style="padding: 8px; min-width: 150px; background: #141414; border: 1px solid #2e2e2e; border-radius: 6px; box-shadow: 0 10px 24px rgba(0,0,0,0.6);">
+                <button id="mh-open-btn" style="width:100%; text-align:center; padding: 7px 12px; background: #222; border: 1px solid #333; color:#fff; font-weight:600; font-size:12px; border-radius:4px; cursor:pointer;">Open Mod Hub</button>
             </div>
         `;
         toolbar.appendChild(toolbarMenu);
@@ -657,8 +627,17 @@ ${rawCode}
         hubWindow = document.createElement("div");
         hubWindow.className = "mod-hub-window";
         document.body.appendChild(hubWindow);
-        if (!activeSession || !activeSession.sessionTicket) renderAuthScreen("device");
-        else renderMainAppScreen();
+
+        if (!activeSession || !activeSession.sessionTicket) {
+            const hwid = getOrCreateHardwareId();
+            loginWithCustomId(hwid).then(() => {
+                if (hubWindow) renderMainAppScreen();
+            }).catch(() => {
+                if (hubWindow) renderAuthScreen("device");
+            });
+        } else {
+            renderMainAppScreen();
+        }
         requestAnimationFrame(() => hubWindow.classList.add("show"));
     }
 
@@ -670,15 +649,15 @@ ${rawCode}
         modal.className = "mod-hub-modal-backdrop";
         modal.innerHTML = `
             <div class="mod-hub-modal-card">
-                <div style="display:flex; justify-content:space-between; align-items:center; border-bottom:1px solid #333; padding-bottom:8px; margin-bottom:12px;">
-                    <div style="font-size:14px; font-weight:bold; color:#fff;">${escapeHtml(title)}</div>
+                <div style="display:flex; justify-content:space-between; align-items:center; border-bottom:1px solid #282828; padding-bottom:10px; margin-bottom:14px;">
+                    <div style="font-size:14px; font-weight:700; color:#fff;">${escapeHtml(title)}</div>
                     <button class="mod-hub-close" id="mh-modal-close">&times;</button>
                 </div>
-                <div style="font-size:12px; color:#ccc; line-height:1.5; max-height:300px; overflow-y:auto;">
+                <div style="font-size:12px; color:#ccc; line-height:1.6; max-height:320px; overflow-y:auto;">
                     ${contentHtml}
                 </div>
-                <div style="margin-top:14px; text-align:right;">
-                    <button class="mod-hub-auth-submit-btn" id="mh-modal-ok" style="padding:6px 16px;">Close</button>
+                <div style="margin-top:16px; text-align:right;">
+                    <button class="mod-hub-add-btn" id="mh-modal-ok" style="padding:6px 18px;">Close</button>
                 </div>
             </div>
         `;
@@ -690,7 +669,7 @@ ${rawCode}
     function showPrivacyPolicy() {
         renderModal("Privacy Policy", `
             <p>Mod Hub does not collect or sell personal information.</p>
-            <p>Authentication utilizes hardware or custom identifiers solely to verify account continuity, mod inventory, and moderation status. Session authentication tokens are managed within private runtime closures and blocked from mod script environments.</p>
+            <p>Authentication utilizes hardware or custom identifiers solely to verify account continuity and moderation status. Session authentication tokens are managed within private runtime closures and blocked from mod script environments.</p>
             <p>Uploaded mods and descriptions are public within the community directory.</p>
         `);
     }
@@ -699,7 +678,7 @@ ${rawCode}
         renderModal("Terms of Service", `
             <p>1. By uploading mods to Mod Hub, you confirm the code does not contain malicious exploits, credential harvesters, or damaging routines.</p>
             <p>2. Mods loaded via Mod Hub run in an isolated execution container. Any attempt to bypass sandboxing or hijack authentication cookies will result in an immediate hardware suspension.</p>
-            <p>3. Virtual currency (MH) is an in-game simulated currency with no real-world monetary value.</p>
+            <p>3. All mods on Mod Hub are free and open for community play.</p>
         `);
     }
 
@@ -754,7 +733,7 @@ ${rawCode}
 
         hubWindow.innerHTML = `
             <div class="mod-hub-header" id="modHubHeader">
-                <div><span style="font-size: 14px; font-weight: bold; color: #fff;">Mod Hub Login</span></div>
+                <span class="mod-hub-brand">MOD HUB LOGIN</span>
                 <button class="mod-hub-close" id="modHubClose">&times;</button>
             </div>
             <div class="mod-hub-auth-container">
@@ -767,7 +746,7 @@ ${rawCode}
                     <form class="mod-hub-auth-form" id="mh-auth-form">
                         ${formFieldsHtml}
                         <div class="mod-hub-auth-status" id="mh-auth-status"></div>
-                        <button type="submit" class="mod-hub-auth-submit-btn" id="mh-auth-submit">Log In</button>
+                        <button type="submit" class="mod-hub-auth-submit-btn" id="mh-auth-submit">Connect</button>
                     </form>
                     <div class="mod-hub-auth-footer-links">
                         <a href="javascript:void(0)" id="mh-link-privacy">Privacy</a> &bull;
@@ -821,74 +800,90 @@ ${rawCode}
     function renderMainAppScreen() {
         if (!hubWindow) return;
         hubWindow.innerHTML = `
-            <div class="mod-hub-sidebar-tab ${isSidebarOpen ? 'open' : ''}" id="mh-sidebar-tab" title="Toggle Menu">
-                <span class="mod-hub-sidebar-tab-arrow">&gt;</span>
-            </div>
             <div class="mod-hub-header" id="modHubHeader">
-                <div style="display:flex; align-items:center; gap:10px;">
+                <div style="display:flex; align-items:center; gap:12px;">
                     <span class="mod-hub-brand">MOD HUB</span>
+                    <nav class="mod-hub-top-nav">
+                        <button class="mod-hub-nav-tab ${activeTab === 'mods' ? 'active' : ''}" data-tab="mods">Browse Mods</button>
+                        <button class="mod-hub-nav-tab ${activeTab === 'installed' ? 'active' : ''}" data-tab="installed">Installed (${loadedMods.size})</button>
+                        <button class="mod-hub-nav-tab ${activeTab === 'upload' ? 'active' : ''}" data-tab="upload">+ Upload</button>
+                        <button class="mod-hub-nav-tab ${activeTab === 'chat' ? 'active' : ''}" data-tab="chat">Chat</button>
+                        <button class="mod-hub-nav-tab ${activeTab === 'about' ? 'active' : ''}" data-tab="about">About</button>
+                    </nav>
+                </div>
+                <div style="display:flex; align-items:center; gap:8px;">
                     <span class="mod-hub-user-pill" id="mh-user-display">${escapeHtml(currentUsername || currentUserEmail || "Connected")} ${isUserAdmin ? '<b style="color:#ffffff;">(ADMIN)</b>' : ''}</span>
                     <a href="https://discord.gg/2nSBHCp2sd" target="_blank" rel="noopener noreferrer" class="mod-hub-discord-link" title="Discord">
                         <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor" style="display:block;">
                             <path d="M20.317 4.37a19.791 19.791 0 0 0-4.885-1.515.074.074 0 0 0-.079.037c-.21.375-.444.864-.608 1.25a18.27 18.27 0 0 0-5.487 0 12.64 12.64 0 0 0-.617-1.25.077.077 0 0 0-.079-.037A19.736 19.736 0 0 0 3.677 4.37a.07.07 0 0 0-.032.027C.533 9.046-.32 13.58.099 18.057a.082.082 0 0 0 .031.057 19.9 19.9 0 0 0 5.993 3.03.078.078 0 0 0 .084-.028c.462-.63.874-1.295 1.226-1.994.021-.041.001-.09-.041-.106a13.107 13.107 0 0 1-1.872-.892.077.077 0 0 1-.008-.128 10.2 10.2 0 0 0 .372-.292.074.074 0 0 1 .077-.01c3.929 1.793 8.18 1.793 12.061 0a.074.074 0 0 1 .078.01c.12.098.246.198.373.292a.077.077 0 0 1-.006.127 12.299 12.299 0 0 1-1.873.893.077.077 0 0 0-.041.107c.36.698.772 1.362 1.225 1.993a.076.076 0 0 0 .084.028 19.839 19.839 0 0 0 6.002-3.03.077.077 0 0 0 .032-.054c.5-5.177-.838-9.674-3.549-13.66a.061.061 0 0 0-.031-.028zM8.02 15.33c-1.183 0-2.157-1.085-2.157-2.419 0-1.333.956-2.419 2.157-2.419 1.21 0 2.176 1.096 2.157 2.42 0 1.333-.956 2.418-2.157 2.418zm7.975 0c-1.183 0-2.157-1.085-2.157-2.419 0-1.333.955-2.419 2.157-2.419 1.21 0 2.176 1.096 2.157 2.42 0 1.333-.946 2.418-2.157 2.418z"/>
                         </svg>
                     </a>
-                </div>
-                <div style="display:flex; align-items:center; gap:8px;">
-                    <button class="mod-hub-nav-btn" id="mh-toggle-upload-btn">+ Upload Mod</button>
                     <button class="mod-hub-logout-btn" id="mh-logout-btn">Logout</button>
                     <button class="mod-hub-close" id="modHubClose">&times;</button>
                 </div>
             </div>
-            <div class="mod-hub-body">
-                <div class="mod-hub-sidebar" id="mh-left-sidebar">
-                    <div class="mod-hub-sidebar-top">
-                        <button class="mod-hub-refresh-btn" id="mh-refresh-btn" title="Refresh">Refresh</button>
-                        <button class="mod-hub-filter-btn ${showActiveOnly ? 'active' : ''}" id="mh-filter-btn" title="Filter">Active</button>
-                    </div>
-                    <div class="mod-hub-search-box">
-                        <input type="text" class="mod-hub-search-input" id="mh-search-input" placeholder="Search mods, authors, tags..." value="${escapeHtml(searchQuery)}">
-                        <button class="mod-hub-search-btn" id="mh-search-btn" title="Search">Search</button>
-                    </div>
-                    <div class="mod-hub-cat-pills" id="mh-cat-pills">
-                        ${["all", "fun", "cool", "elements", "function", "tool"].map(cat => `
-                            <button class="mod-hub-cat-pill ${selectedCategory === cat ? 'active' : ''}" data-cat="${cat}">
-                                ${cat.charAt(0).toUpperCase() + cat.slice(1)}
-                            </button>
-                        `).join("")}
-                    </div>
-                    <div class="mod-hub-list" id="mh-mod-list"><div class="mod-hub-loading">Loading mods...</div></div>
-                </div>
-                <div class="mod-hub-main" id="mh-main-panel"><div class="mod-hub-empty-state">Select a mod.</div></div>
-                <div class="mod-hub-right-sidebar ${isSidebarOpen ? 'open' : ''}" id="mh-right-sidebar">
-                    <button class="mod-hub-side-btn ${activeView === 'mods' ? 'active' : ''}" id="mh-tab-mods">Mods Store</button>
-                    <button class="mod-hub-side-btn ${activeView === 'chat' ? 'active' : ''}" id="mh-tab-chat">Chat</button>
-                    <button class="mod-hub-side-btn ${activeView === 'community' ? 'active' : ''}" id="mh-tab-community">Community</button>
-                    <button class="mod-hub-side-btn ${activeView === 'installed' ? 'active' : ''}" id="mh-tab-installed">Installed</button>
-                    <button class="mod-hub-side-btn ${activeView === 'settings' ? 'active' : ''}" id="mh-tab-settings">Settings</button>
-                    <button class="mod-hub-side-btn ${activeView === 'about' ? 'active' : ''}" id="mh-tab-about">About</button>
-                </div>
-            </div>
+            <div class="mod-hub-body" id="mh-body-content"></div>
         `;
 
         setupDragging(document.getElementById("modHubHeader"), hubWindow);
         document.getElementById("modHubClose").onclick = closeHubWindow;
         document.getElementById("mh-logout-btn").onclick = () => { clearSession(); renderAuthScreen("device"); };
 
-        const tab = document.getElementById("mh-sidebar-tab");
-        const sidebar = document.getElementById("mh-right-sidebar");
-        tab.onclick = () => { isSidebarOpen = !isSidebarOpen; tab.classList.toggle("open", isSidebarOpen); sidebar.classList.toggle("open", isSidebarOpen); };
-
-        ["mods","chat","community","installed","settings","about"].forEach(v => {
-            const btn = document.getElementById(`mh-tab-${v}`);
-            if (btn) btn.onclick = () => switchView(v);
+        document.querySelectorAll(".mod-hub-nav-tab").forEach(tabBtn => {
+            tabBtn.onclick = () => {
+                const tab = tabBtn.getAttribute("data-tab");
+                switchTab(tab);
+            };
         });
 
-        document.getElementById("mh-toggle-upload-btn").onclick = () => {
-            isUploadMode = !isUploadMode;
-            if (isUploadMode) renderUploadScreen();
-            else switchView("mods");
-        };
+        switchTab(activeTab);
+    }
+
+    function switchTab(tab) {
+        activeTab = tab;
+        document.querySelectorAll(".mod-hub-nav-tab").forEach(b => {
+            b.classList.toggle("active", b.getAttribute("data-tab") === tab);
+        });
+
+        const container = document.getElementById("mh-body-content");
+        if (!container) return;
+
+        if (tab === "mods") {
+            renderModsView(container);
+        } else if (tab === "installed") {
+            renderInstalledView(container);
+        } else if (tab === "upload") {
+            renderUploadView(container);
+        } else if (tab === "chat") {
+            renderChatView(container);
+        } else if (tab === "about") {
+            renderAboutView(container);
+        }
+    }
+
+    function renderModsView(container) {
+        container.innerHTML = `
+            <div class="mod-hub-sidebar" id="mh-left-sidebar">
+                <div class="mod-hub-sidebar-top">
+                    <button class="mod-hub-refresh-btn" id="mh-refresh-btn">Refresh</button>
+                    <button class="mod-hub-filter-btn ${showActiveOnly ? 'active' : ''}" id="mh-filter-btn">Active Only</button>
+                </div>
+                <div class="mod-hub-search-box">
+                    <input type="text" class="mod-hub-search-input" id="mh-search-input" placeholder="Search mods, authors, tags..." value="${escapeHtml(searchQuery)}">
+                    <button class="mod-hub-search-btn" id="mh-search-btn">Search</button>
+                </div>
+                <div class="mod-hub-cat-pills" id="mh-cat-pills">
+                    ${["all", "fun", "cool", "elements", "function", "tool"].map(cat => `
+                        <button class="mod-hub-cat-pill ${selectedCategory === cat ? 'active' : ''}" data-cat="${cat}">
+                            ${cat.charAt(0).toUpperCase() + cat.slice(1)}
+                        </button>
+                    `).join("")}
+                </div>
+                <div class="mod-hub-list" id="mh-mod-list"><div class="mod-hub-loading">Loading mods...</div></div>
+            </div>
+            <div class="mod-hub-main" id="mh-main-panel"><div class="mod-hub-empty-state">Select a mod to inspect code.</div></div>
+        `;
+
         document.getElementById("mh-refresh-btn").onclick = () => loadModList();
         document.getElementById("mh-filter-btn").onclick = () => {
             showActiveOnly = !showActiveOnly;
@@ -913,228 +908,87 @@ ${rawCode}
         loadModList();
     }
 
-    function switchView(viewName) {
-        activeView = viewName;
-        document.querySelectorAll(".mod-hub-side-btn").forEach(b => b.classList.remove("active"));
-        const btn = document.getElementById(`mh-tab-${viewName}`);
-        if (btn) btn.classList.add("active");
-
-        isSidebarOpen = false;
-        const sidebarTab = document.getElementById("mh-sidebar-tab");
-        const sidebar = document.getElementById("mh-right-sidebar");
-        if (sidebarTab) sidebarTab.classList.remove("open");
-        if (sidebar) sidebar.classList.remove("open");
-
-        const leftSidebar = document.getElementById("mh-left-sidebar");
-        if (viewName === "mods") {
-            if (leftSidebar) leftSidebar.style.display = "flex";
-            loadModList();
-        } else {
-            if (leftSidebar) leftSidebar.style.display = "none";
-            renderSectionView(viewName);
-        }
-    }
-
-    function renderSectionView(viewName) {
-        const main = document.getElementById("mh-main-panel");
-        if (!main) return;
-
-        if (viewName === "chat") {
-            main.innerHTML = `
-                <div class="mod-hub-tab-page" style="height:100%; display:flex; flex-direction:column;">
-                    <h2 class="mod-hub-tab-header">Community Live Chat</h2>
-                    <div class="mod-hub-chat-box" id="mh-chat-history">
-                        ${chatMessages.map(m => `<div class="mod-hub-chat-msg"><span class="mod-hub-chat-user">${escapeHtml(m.sender)}:</span><span class="mod-hub-chat-text">${escapeHtml(m.text)}</span><span class="mod-hub-chat-time">${m.time}</span></div>`).join("")}
+    function renderInstalledView(container) {
+        const loadedArr = Array.from(loadedMods.entries());
+        container.innerHTML = `
+            <div class="mod-hub-tab-page" style="padding: 24px;">
+                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px;">
+                    <div>
+                        <h2 class="mod-hub-tab-header" style="margin:0;">Installed Sandboxed Mods</h2>
+                        <div style="font-size:12px; color:#888; margin-top:2px;">${loadedMods.size} active mod instance(s) running.</div>
                     </div>
-                    <form id="mh-chat-form" style="display:flex; gap:8px; margin-top:8px;">
-                        <input type="text" id="mh-chat-input" placeholder="Type a message..." required style="flex:1; background:#141414; border:1px solid #333; border-radius:4px; padding:8px 10px; color:#fff; font-size:12px; outline:none;">
-                        <button type="submit" class="mod-hub-add-btn" style="padding:8px 16px; font-size:11px;">Send</button>
-                    </form>
+                    ${loadedArr.length > 0 ? `<button class="mod-hub-unload-btn" id="mh-unload-all-btn">Unload All</button>` : ''}
                 </div>
-            `;
-            const chatHistory = document.getElementById("mh-chat-history");
-            chatHistory.scrollTop = chatHistory.scrollHeight;
-            document.getElementById("mh-chat-form").onsubmit = (e) => {
-                e.preventDefault();
-                const input = document.getElementById("mh-chat-input");
-                if (!input.value.trim()) return;
-                chatMessages.push({ sender: currentUsername || "Player", text: input.value.trim(), time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) });
-                input.value = "";
-                renderSectionView("chat");
-            };
-        } else if (viewName === "community") {
-            main.innerHTML = `
-                <div class="mod-hub-tab-page">
-                    <h2 class="mod-hub-tab-header">Community Profile</h2>
-                    <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px; margin-bottom:12px;">
-                        <div class="mod-hub-card">
-                            <div style="font-size:12px; font-weight:bold; color:#fff; margin-bottom:6px;">Your Profile</div>
-                            <div style="font-size:11px; color:#ccc;">User: <b style="color:#fff;">${escapeHtml(currentUsername || currentUserEmail || "Guest")}</b></div>
-                            <div style="font-size:11px; color:#ccc; margin-top:3px;">Status: Online</div>
-                        </div>
-                        <div class="mod-hub-card">
-                            <div style="font-size:12px; font-weight:bold; color:#fff; margin-bottom:6px;">Directory Status</div>
-                            <div style="font-size:11px; color:#aaa;">Mods in registry: ${mods.length}</div>
-                            <div style="font-size:11px; color:#aaa; margin-top:3px;">Running in sandbox: ${loadedMods.size}</div>
-                        </div>
+                ${loadedArr.length === 0 ? `
+                    <div class="mod-hub-card" style="text-align:center; padding:36px 20px; color:#777;">
+                        <div style="font-size:13px; margin-bottom:8px;">No mods currently running in sandbox container.</div>
+                        <button class="mod-hub-add-btn" id="mh-browse-mods-btn">Browse Mods</button>
                     </div>
-                </div>
-            `;
-        } else if (viewName === "installed") {
-            const loadedArr = Array.from(loadedMods.entries());
-            main.innerHTML = `
-                <div class="mod-hub-tab-page">
-                    <h2 class="mod-hub-tab-header">Installed Sandboxed Mods</h2>
-                    <div style="display:flex; gap:12px; margin-bottom:12px;">
-                        <div class="mod-hub-card" style="flex:1;"><div style="font-size:11px; color:#aaa;">Available Mods</div><div style="font-size:20px; font-weight:bold; color:#fff; margin-top:4px;">${mods.length}</div></div>
-                        <div class="mod-hub-card" style="flex:1;"><div style="font-size:11px; color:#aaa;">Active In Sandbox</div><div style="font-size:20px; font-weight:bold; color:#fff; margin-top:4px;">${loadedMods.size}</div></div>
-                    </div>
-                    <div class="mod-hub-card" style="flex:1;">
-                        <div style="font-size:12px; font-weight:bold; color:#fff; margin-bottom:8px;">Running Instances</div>
-                        ${loadedArr.length === 0 ? '<div style="font-size:12px; color:#888;">No mods currently running in sandbox container.</div>' : `
-                            <div style="display:flex; flex-direction:column; gap:6px; max-height:200px; overflow-y:auto;">
-                                ${loadedArr.map(([fn, id]) => `
-                                    <div style="display:flex; justify-content:space-between; align-items:center; background:#141414; padding:8px 12px; border-radius:4px; border:1px solid #282828;">
-                                        <span style="font-family:monospace; font-size:12px; color:#fff;">${escapeHtml(fn)}</span>
-                                        <span style="font-size:10px; color:#fff; background:#383838; padding:2px 6px; border-radius:3px;">RUNNING</span>
+                ` : `
+                    <div style="display:flex; flex-direction:column; gap:8px;">
+                        ${loadedArr.map(([fn, id]) => {
+                            const modObj = mods.find(m => m.filename === fn);
+                            const displayName = modObj ? (modObj.name || fn) : fn;
+                            return `
+                                <div class="mod-hub-card" style="display:flex; justify-content:space-between; align-items:center;">
+                                    <div>
+                                        <div style="font-size:13px; font-weight:600; color:#fff;">${escapeHtml(displayName)}</div>
+                                        <div style="font-family:monospace; font-size:11px; color:#777; margin-top:2px;">${escapeHtml(fn)}</div>
                                     </div>
-                                `).join("")}
-                            </div>
-                        `}
+                                    <button class="mod-hub-unload-btn mh-unload-single-btn" data-fn="${escapeHtml(fn)}">Unload</button>
+                                </div>
+                            `;
+                        }).join("")}
                     </div>
-                </div>
-            `;
-        } else if (viewName === "settings") {
-            main.innerHTML = `
-                <div class="mod-hub-tab-page">
-                    <h2 class="mod-hub-tab-header">Settings</h2>
-                    <div style="display:flex; flex-direction:column; gap:10px;">
-                        <div class="mod-hub-card" style="display:flex; justify-content:space-between; align-items:center;">
-                            <div>
-                                <div style="font-size:12px; font-weight:bold; color:#fff;">Sandboxed Containers</div>
-                            </div>
-                            <span style="color:#fff; font-size:12px; font-weight:bold;">ENABLED</span>
-                        </div>
-                        <div class="mod-hub-card" style="display:flex; justify-content:space-between; align-items:center;">
-                            <div>
-                                <div style="font-size:12px; font-weight:bold; color:#fff;">Active Session</div>
-                            </div>
-                            <button class="mod-hub-logout-btn" id="mh-clear-session-btn" style="padding:6px 12px; font-size:11px;">Clear Session</button>
-                        </div>
-                        <div class="mod-hub-card" style="display:flex; justify-content:space-between; align-items:center;">
-                            <div>
-                                <div style="font-size:12px; font-weight:bold; color:#fff;">Loaded Mods (${loadedMods.size})</div>
-                            </div>
-                            <button class="mod-hub-unload-btn" id="mh-unload-all-btn" style="padding:6px 12px; font-size:11px;">Unload All</button>
-                        </div>
-                    </div>
-                </div>
-            `;
-            document.getElementById("mh-clear-session-btn").onclick = () => {
-                clearSession();
-                renderAuthScreen("device");
-            };
-            document.getElementById("mh-unload-all-btn").onclick = () => {
-                try {
-                    Array.from(loadedMods.keys()).forEach(fn => {
-                        const modObj = mods.find(m => m.filename === fn);
-                        if (modObj) unloadModFromGame(modObj);
-                    });
-                } catch(e){}
-                renderSectionView("settings");
-            };
-        } else if (viewName === "about") {
-            main.innerHTML = `
-                <div class="mod-hub-tab-page">
-                    <h2 class="mod-hub-tab-header">About & Policies</h2>
-                    <div style="display:flex; flex-direction:column; gap:12px;">
-                        <div class="mod-hub-card">
-                            <div style="font-size:13px; font-weight:bold; color:#fff; margin-bottom:6px;">Privacy Policy</div>
-                            <div style="font-size:11px; color:#ccc; line-height:1.4;">Hardware and custom identifiers are used solely for authentication and mod verification. Cookies and credentials are protected from sandboxed mod access.</div>
-                        </div>
-                        <div class="mod-hub-card">
-                            <div style="font-size:13px; font-weight:bold; color:#fff; margin-bottom:6px;">Terms of Service</div>
-                            <div style="font-size:11px; color:#ccc; line-height:1.4;">Uploaded code must comply with safety standards. Harvesters, credential stealers, and exploitative routines are strictly prohibited.</div>
-                        </div>
-                        <div class="mod-hub-card">
-                            <div style="font-size:13px; font-weight:bold; color:#fff; margin-bottom:6px;">Credits</div>
-                            <div style="font-size:11px; color:#ccc; line-height:1.4;">Co-Owner: _pykon20 &bull; Simbox Simulation Engine, PlayFab Backend Services, and Community Mod Creators.</div>
-                        </div>
-                    </div>
-                </div>
-            `;
-        } else {
-            main.innerHTML = `<div class="mod-hub-tab-page"><h2 class="mod-hub-tab-header">${viewName.toUpperCase()}</h2></div>`;
-        }
-    }
-
-    function getCategoryList(catString) {
-        if (!catString) return [];
-        return catString.split(/[\s,]+/).map(c => c.trim().toLowerCase()).filter(Boolean);
-    }
-
-    function renderTagSelector(containerId, activeTags = []) {
-        const allCategories = ["fun", "cool", "elements", "function", "tool"];
-        const selected = new Set(activeTags.map(t => t.toLowerCase()));
-        return `
-            <div id="${containerId}" style="display:flex; flex-wrap:wrap; gap:6px; margin-top:2px;">
-                ${allCategories.map(cat => `
-                    <button type="button" class="mod-hub-tag-pick-btn ${selected.has(cat) ? 'selected' : ''}" data-cat="${cat}" style="background:${selected.has(cat) ? '#383838' : '#222'}; border:1px solid ${selected.has(cat) ? '#777' : '#383838'}; color:${selected.has(cat) ? '#fff' : '#aaa'}; border-radius:12px; padding:4px 10px; font-size:11px; font-weight:600; cursor:pointer;">
-                        ${selected.has(cat) ? '[X] ' : '[+] '}${cat.charAt(0).toUpperCase() + cat.slice(1)}
-                    </button>
-                `).join("")}
+                `}
             </div>
         `;
-    }
 
-    function setupTagSelectorEvents(containerId) {
-        const container = document.getElementById(containerId);
-        if (!container) return;
-        container.querySelectorAll(".mod-hub-tag-pick-btn").forEach(btn => {
+        if (document.getElementById("mh-browse-mods-btn")) {
+            document.getElementById("mh-browse-mods-btn").onclick = () => switchTab("mods");
+        }
+        if (document.getElementById("mh-unload-all-btn")) {
+            document.getElementById("mh-unload-all-btn").onclick = () => {
+                Array.from(loadedMods.keys()).forEach(fn => {
+                    const modObj = mods.find(m => m.filename === fn) || { filename: fn };
+                    unloadModFromGame(modObj);
+                });
+                renderInstalledView(container);
+            };
+        }
+        container.querySelectorAll(".mh-unload-single-btn").forEach(btn => {
             btn.onclick = () => {
-                const isSel = btn.classList.toggle("selected");
-                const cat = btn.getAttribute("data-cat");
-                btn.style.background = isSel ? "#383838" : "#222";
-                btn.style.borderColor = isSel ? "#777" : "#383838";
-                btn.style.color = isSel ? "#fff" : "#aaa";
-                btn.textContent = (isSel ? "[X] " : "[+] ") + cat.charAt(0).toUpperCase() + cat.slice(1);
+                const fn = btn.getAttribute("data-fn");
+                const modObj = mods.find(m => m.filename === fn) || { filename: fn };
+                unloadModFromGame(modObj);
+                renderInstalledView(container);
             };
         });
     }
 
-    function getSelectedTagsFromContainer(containerId) {
-        const container = document.getElementById(containerId);
-        if (!container) return "";
-        const tags = [];
-        container.querySelectorAll(".mod-hub-tag-pick-btn.selected").forEach(btn => {
-            tags.push(btn.getAttribute("data-cat"));
-        });
-        return tags.join(",");
-    }
-
-    function renderUploadScreen() {
-        const main = document.getElementById("mh-main-panel");
-        if (!main) return;
-        main.innerHTML = `
-            <div class="mod-hub-upload-card">
-                <h2 style="font-size:18px; margin:0 0 6px 0; color:#fff;">Upload a New Mod</h2>
-                <form id="mh-upload-form" style="display:flex; flex-direction:column; gap:10px;">
-                    <div class="mod-hub-input-group"><label>Mod Name</label><input type="text" id="mh-up-name" required placeholder="e.g. Laser Particle"></div>
-                    <div class="mod-hub-input-group"><label>Filename</label><input type="text" id="mh-up-filename" required placeholder="e.g. laser.js"></div>
-                    <div class="mod-hub-input-group"><label>Version</label><input type="text" id="mh-up-version" value="1.0.0" required></div>
-                    <div class="mod-hub-input-group"><label>Category Tags</label>${renderTagSelector("mh-upload-tags-box")}</div>
-                    <div class="mod-hub-input-group"><label>Description</label><textarea id="mh-up-desc" rows="2" required style="background:#141414; border:1px solid #383838; border-radius:4px; padding:8px; color:#fff; font-size:12px; outline:none; resize:none;"></textarea></div>
-                    <div class="mod-hub-input-group"><label>JavaScript Code</label><textarea id="mh-up-code" rows="8" required style="background:#141414; border:1px solid #383838; border-radius:4px; padding:8px; color:#fff; font-family:monospace; font-size:11px; outline:none; resize:none;" placeholder="// Mod code here..."></textarea></div>
-                    <div id="mh-upload-status" class="mod-hub-auth-status"></div>
-                    <div style="display:flex; gap:8px;">
-                        <button type="submit" class="mod-hub-auth-submit-btn" id="mh-upload-submit" style="flex:1;">Submit Mod</button>
-                        <button type="button" class="mod-hub-logout-btn" id="mh-upload-cancel" style="padding:10px 16px;">Cancel</button>
-                    </div>
-                </form>
+    function renderUploadView(container) {
+        container.innerHTML = `
+            <div class="mod-hub-tab-page" style="padding: 24px; overflow-y:auto;">
+                <div class="mod-hub-upload-card" style="max-width:700px; margin:0 auto;">
+                    <h2 style="font-size:18px; margin:0 0 14px 0; color:#fff;">Upload a Mod</h2>
+                    <form id="mh-upload-form" style="display:flex; flex-direction:column; gap:12px;">
+                        <div class="mod-hub-input-group"><label>Mod Name</label><input type="text" id="mh-up-name" required placeholder="e.g. Laser Particle"></div>
+                        <div class="mod-hub-input-group"><label>Filename</label><input type="text" id="mh-up-filename" required placeholder="e.g. laser.js"></div>
+                        <div class="mod-hub-input-group"><label>Version</label><input type="text" id="mh-up-version" value="1.0.0" required></div>
+                        <div class="mod-hub-input-group"><label>Category Tags</label>${renderTagSelector("mh-upload-tags-box")}</div>
+                        <div class="mod-hub-input-group"><label>Description</label><textarea id="mh-up-desc" rows="2" required placeholder="What does this mod do?"></textarea></div>
+                        <div class="mod-hub-input-group"><label>JavaScript Code</label><textarea id="mh-up-code" rows="8" required style="font-family:monospace; font-size:11px;" placeholder="// Simbox Modding API code..."></textarea></div>
+                        <div id="mh-upload-status" class="mod-hub-auth-status"></div>
+                        <div style="display:flex; gap:8px;">
+                            <button type="submit" class="mod-hub-auth-submit-btn" id="mh-upload-submit" style="flex:1;">Publish Mod</button>
+                            <button type="button" class="mod-hub-logout-btn" id="mh-upload-cancel" style="padding:9px 16px;">Cancel</button>
+                        </div>
+                    </form>
+                </div>
             </div>
         `;
         setupTagSelectorEvents("mh-upload-tags-box");
-        document.getElementById("mh-upload-cancel").onclick = () => { isUploadMode = false; switchView("mods"); };
+        document.getElementById("mh-upload-cancel").onclick = () => switchTab("mods");
         document.getElementById("mh-upload-form").onsubmit = async (e) => {
             e.preventDefault();
             const btn = document.getElementById("mh-upload-submit");
@@ -1159,7 +1013,7 @@ ${rawCode}
                 if (!res || !res.success) throw new Error(res?.error || "Finalize failed.");
                 status.textContent = "Mod published successfully.";
                 status.className = "mod-hub-auth-status success";
-                setTimeout(() => { isUploadMode = false; switchView("mods"); }, 1000);
+                setTimeout(() => switchTab("mods"), 1000);
             } catch (err) {
                 status.textContent = err.message;
                 status.className = "mod-hub-auth-status error";
@@ -1168,23 +1022,122 @@ ${rawCode}
         };
     }
 
+    function renderChatView(container) {
+        container.innerHTML = `
+            <div class="mod-hub-tab-page" style="height:100%; display:flex; flex-direction:column; padding:20px;">
+                <h2 class="mod-hub-tab-header">Community Live Chat</h2>
+                <div class="mod-hub-chat-box" id="mh-chat-history">
+                    ${chatMessages.map(m => `<div class="mod-hub-chat-msg"><span class="mod-hub-chat-user">${escapeHtml(m.sender)}:</span><span class="mod-hub-chat-text">${escapeHtml(m.text)}</span><span class="mod-hub-chat-time">${m.time}</span></div>`).join("")}
+                </div>
+                <form id="mh-chat-form" style="display:flex; gap:8px; margin-top:10px;">
+                    <input type="text" id="mh-chat-input" placeholder="Type a message..." required style="flex:1; background:#0f0f0f; border:1px solid #282828; border-radius:6px; padding:9px 12px; color:#fff; font-size:12px; outline:none;">
+                    <button type="submit" class="mod-hub-add-btn" style="padding:9px 18px;">Send</button>
+                </form>
+            </div>
+        `;
+        const chatHistory = document.getElementById("mh-chat-history");
+        chatHistory.scrollTop = chatHistory.scrollHeight;
+        document.getElementById("mh-chat-form").onsubmit = (e) => {
+            e.preventDefault();
+            const input = document.getElementById("mh-chat-input");
+            if (!input.value.trim()) return;
+            chatMessages.push({ sender: currentUsername || "Player", text: input.value.trim(), time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) });
+            input.value = "";
+            renderChatView(container);
+        };
+    }
+
+    function renderAboutView(container) {
+        container.innerHTML = `
+            <div class="mod-hub-tab-page" style="padding:24px; overflow-y:auto;">
+                <div style="max-width:700px; margin:0 auto; display:flex; flex-direction:column; gap:14px;">
+                    <div class="mod-hub-card">
+                        <div style="font-size:14px; font-weight:700; color:#fff; margin-bottom:8px;">Credits</div>
+                        <div style="font-size:12px; color:#ccc; line-height:1.6;">
+                            <b>Co-Owner:</b> _pykon20<br>
+                            <b>Platform:</b> Simbox Physics & Simulation Engine<br>
+                            <b>Infrastructure:</b> PlayFab Backend Services<br>
+                            <b>Community:</b> Custom Element Developers & Mod Authors
+                        </div>
+                    </div>
+                    <div class="mod-hub-card">
+                        <div style="font-size:14px; font-weight:700; color:#fff; margin-bottom:8px;">Terms of Service</div>
+                        <div style="font-size:12px; color:#ccc; line-height:1.6;">
+                            All mods in Mod Hub are free and open for community play. Uploaded code must comply with safety standards. Harvesters, credential stealers, and exploitative routines are strictly prohibited and result in permanent hardware bans.
+                        </div>
+                    </div>
+                    <div class="mod-hub-card">
+                        <div style="font-size:14px; font-weight:700; color:#fff; margin-bottom:8px;">Privacy Policy</div>
+                        <div style="font-size:12px; color:#ccc; line-height:1.6;">
+                            Hardware and custom identifiers are used solely for account authentication and mod verification. Cookies and credentials are protected from sandboxed mod access.
+                        </div>
+                    </div>
+                </div>
+            </div>
+        `;
+    }
+
+    function getCategoryList(catString) {
+        if (!catString) return [];
+        return catString.split(/[\s,]+/).map(c => c.trim().toLowerCase()).filter(Boolean);
+    }
+
+    function renderTagSelector(containerId, activeTags = []) {
+        const allCategories = ["fun", "cool", "elements", "function", "tool"];
+        const selected = new Set(activeTags.map(t => t.toLowerCase()));
+        return `
+            <div id="${containerId}" style="display:flex; flex-wrap:wrap; gap:6px; margin-top:2px;">
+                ${allCategories.map(cat => `
+                    <button type="button" class="mod-hub-tag-pick-btn ${selected.has(cat) ? 'selected' : ''}" data-cat="${cat}" style="background:${selected.has(cat) ? '#2d2d2d' : '#1c1c1c'}; border:1px solid ${selected.has(cat) ? '#666' : '#2c2c2c'}; color:${selected.has(cat) ? '#fff' : '#888'}; border-radius:4px; padding:4px 10px; font-size:10px; font-weight:600; cursor:pointer;">
+                        ${selected.has(cat) ? '[X] ' : '[+] '}${cat.charAt(0).toUpperCase() + cat.slice(1)}
+                    </button>
+                `).join("")}
+            </div>
+        `;
+    }
+
+    function setupTagSelectorEvents(containerId) {
+        const container = document.getElementById(containerId);
+        if (!container) return;
+        container.querySelectorAll(".mod-hub-tag-pick-btn").forEach(btn => {
+            btn.onclick = () => {
+                const isSel = btn.classList.toggle("selected");
+                const cat = btn.getAttribute("data-cat");
+                btn.style.background = isSel ? "#2d2d2d" : "#1c1c1c";
+                btn.style.borderColor = isSel ? "#666" : "#2c2c2c";
+                btn.style.color = isSel ? "#fff" : "#888";
+                btn.textContent = (isSel ? "[X] " : "[+] ") + cat.charAt(0).toUpperCase() + cat.slice(1);
+            };
+        });
+    }
+
+    function getSelectedTagsFromContainer(containerId) {
+        const container = document.getElementById(containerId);
+        if (!container) return "";
+        const tags = [];
+        container.querySelectorAll(".mod-hub-tag-pick-btn.selected").forEach(btn => {
+            tags.push(btn.getAttribute("data-cat"));
+        });
+        return tags.join(",");
+    }
+
     function renderEditScreen(mod) {
         const main = document.getElementById("mh-main-panel");
         if (!main) return;
         const currentTags = getCategoryList(mod.category);
         main.innerHTML = `
             <div class="mod-hub-upload-card">
-                <h2 style="font-size:18px; margin:0 0 6px 0; color:#fff;">Edit Mod: ${escapeHtml(mod.name)}</h2>
-                <form id="mh-edit-form" style="display:flex; flex-direction:column; gap:10px;">
+                <h2 style="font-size:18px; margin:0 0 14px 0; color:#fff;">Edit Mod: ${escapeHtml(mod.name)}</h2>
+                <form id="mh-edit-form" style="display:flex; flex-direction:column; gap:12px;">
                     <div class="mod-hub-input-group"><label>Mod Name</label><input type="text" id="mh-edit-name" value="${escapeHtml(mod.name || '')}" required></div>
                     <div class="mod-hub-input-group"><label>Version</label><input type="text" id="mh-edit-version" value="${escapeHtml(mod.version || '1.0.0')}" required></div>
                     <div class="mod-hub-input-group"><label>Category Tags</label>${renderTagSelector("mh-edit-tags-box", currentTags)}</div>
-                    <div class="mod-hub-input-group"><label>Description</label><textarea id="mh-edit-desc" rows="2" required style="background:#141414; border:1px solid #383838; border-radius:4px; padding:8px; color:#fff; font-size:12px; outline:none; resize:none;">${escapeHtml(mod.Description || "")}</textarea></div>
-                    <div class="mod-hub-input-group"><label>Update Code (Optional)</label><textarea id="mh-edit-code" rows="8" style="background:#141414; border:1px solid #383838; border-radius:4px; padding:8px; color:#fff; font-family:monospace; font-size:11px; outline:none; resize:none;" placeholder="Leave empty to keep existing code..."></textarea></div>
+                    <div class="mod-hub-input-group"><label>Description</label><textarea id="mh-edit-desc" rows="2" required>${escapeHtml(mod.Description || "")}</textarea></div>
+                    <div class="mod-hub-input-group"><label>Update Code (Optional)</label><textarea id="mh-edit-code" rows="8" style="font-family:monospace; font-size:11px;" placeholder="Leave empty to keep existing code..."></textarea></div>
                     <div id="mh-edit-status" class="mod-hub-auth-status"></div>
                     <div style="display:flex; gap:8px;">
                         <button type="submit" class="mod-hub-auth-submit-btn" id="mh-edit-submit" style="flex:1;">Save Changes</button>
-                        <button type="button" class="mod-hub-logout-btn" id="mh-edit-cancel" style="padding:10px 16px;">Cancel</button>
+                        <button type="button" class="mod-hub-logout-btn" id="mh-edit-cancel" style="padding:9px 16px;">Cancel</button>
                     </div>
                 </form>
             </div>
@@ -1282,27 +1235,38 @@ ${rawCode}
             const likes = parseInt(mod.likes || "0", 10) || 0;
             const views = parseInt(mod.views || "0", 10) || 0;
             const cats = getCategoryList(mod.category);
+            const isInstalled = loadedMods.has(mod.filename);
 
             item.innerHTML = `
-                <div style="display:flex; flex-direction:column; gap:4px; width:100%; overflow:hidden;">
-                    <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:4px;">
+                <div style="display:flex; flex-direction:column; gap:6px; width:100%; overflow:hidden;">
+                    <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:6px;">
                         <div class="mod-hub-item-name" title="${escapeHtml(mod.name || mod.filename)}">
                             ${mod.pinned ? '<span class="mod-hub-pinned-badge">PINNED</span> ' : ''}${escapeHtml(mod.name || mod.filename)}
                         </div>
+                        <button class="mod-hub-card-action-btn ${isInstalled ? 'installed' : ''}" data-fn="${escapeHtml(mod.filename)}">
+                            ${isInstalled ? 'Unload' : 'Add'}
+                        </button>
                     </div>
                     <div style="display:flex; justify-content:space-between; align-items:center; margin-top:2px;">
-                        <div style="display:flex; flex-wrap:wrap; gap:3px;">
-                            ${cats.length > 0 ? cats.map(c => `<span class="mod-hub-cat-badge ${c}">${c.toUpperCase()}</span>`).join("") : '<span></span>'}
+                        <div style="display:flex; flex-wrap:wrap; gap:4px;">
+                            ${cats.length > 0 ? cats.map(c => `<span class="mod-hub-cat-badge">${c.toUpperCase()}</span>`).join("") : '<span></span>'}
                         </div>
                         <div class="mod-hub-item-stats">
-                            <span title="Likes">Likes: ${likes}</span>
-                            <span title="Views">Views: ${views}</span>
+                            <span>Likes: ${likes}</span>
+                            <span>Views: ${views}</span>
                         </div>
                     </div>
-                    ${loadedMods.has(mod.filename) ? '<div style="margin-top:2px;"><span class="mod-hub-added-badge">ACTIVE</span></div>' : ''}
                 </div>
             `;
-            item.onclick = () => selectMod(mod);
+            item.onclick = (e) => {
+                if (e.target.closest(".mod-hub-card-action-btn")) {
+                    e.stopPropagation();
+                    if (isInstalled) unloadModFromGame(mod);
+                    else addModToGame(mod);
+                    return;
+                }
+                selectMod(mod);
+            };
             listDiv.appendChild(item);
         });
     }
@@ -1326,11 +1290,11 @@ ${rawCode}
 
         main.innerHTML = `
             <div class="mod-hub-detail">
-                <div style="display:flex; justify-content:space-between; align-items:flex-start;">
+                <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:12px;">
                     <div>
-                        <div style="display:flex; align-items:center; gap:8px; margin-bottom:2px; flex-wrap:wrap;">
+                        <div style="display:flex; align-items:center; gap:8px; margin-bottom:4px; flex-wrap:wrap;">
                             <h2 class="mod-hub-detail-title">${escapeHtml(mod.name)}</h2>
-                            ${cats.map(c => `<span class="mod-hub-cat-badge ${c}">${c.toUpperCase()}</span>`).join("")}
+                            ${cats.map(c => `<span class="mod-hub-cat-badge">${c.toUpperCase()}</span>`).join("")}
                         </div>
                         <div class="mod-hub-detail-filename">by <span style="color:#aaa;">${escapeHtml(mod.author)}</span> &bull; ${escapeHtml(mod.filename)}</div>
                     </div>
@@ -1339,12 +1303,12 @@ ${rawCode}
                         <span class="mod-hub-stat" id="mh-view-count">Views: ${mod.views || 0}</span>
                     </div>
                 </div>
-                <p class="mod-hub-detail-desc">${escapeHtml(mod.Description || "")}</p>
+                <div class="mod-hub-detail-desc">${escapeHtml(mod.Description || "")}</div>
                 <div class="mod-hub-snippet-label">Code Preview</div>
                 <pre class="mod-hub-snippet" id="mh-snippet"><code>Loading preview...</code></pre>
                 <div class="mod-hub-detail-status" id="mh-status"></div>
                 <div class="mod-hub-btn-row">
-                    <button class="mod-hub-add-btn" id="mh-add-btn" ${alreadyAdded ? "disabled" : ""}>${alreadyAdded ? "Added to Game" : "Add to Game"}</button>
+                    <button class="mod-hub-add-btn" id="mh-add-btn" ${alreadyAdded ? "disabled" : ""}>${alreadyAdded ? "In Game" : "Add to Game"}</button>
                     <button class="mod-hub-unload-btn" id="mh-unload-btn" style="${alreadyAdded ? "" : "display:none;"}">Unload</button>
                     ${isOwner && mod.filename !== ADMIN_MOD_FILENAME ? `<button class="mod-hub-edit-btn" id="mh-edit-btn">Edit Mod</button>` : ''}
                     ${isUserAdmin && mod.filename !== ADMIN_MOD_FILENAME ? `<button class="mod-hub-pin-toggle-btn" id="mh-pin-toggle-btn">${mod.pinned ? "Unpin" : "Pin"}</button>` : ''}
@@ -1366,7 +1330,8 @@ ${rawCode}
             const res = await executeCloudScript("likeMod", { filename: mod.filename });
             if (res && res.success) {
                 mod.likes = res.likes;
-                document.getElementById("mh-like-count").textContent = res.likes;
+                const countEl = document.getElementById("mh-like-count");
+                if (countEl) countEl.textContent = res.likes;
             }
         } catch (e) {}
     }
@@ -1375,13 +1340,13 @@ ${rawCode}
         const snippetEl = document.getElementById("mh-snippet");
         if (!snippetEl) return;
         try {
-            let res = codeCache[mod.filename];
-            if (!res) {
-                res = await fetchModCode(mod.filename);
-                if (!res.locked) codeCache[mod.filename] = res.code;
-            } else res = { code: res, locked: false };
+            let code = codeCache[mod.filename];
+            if (!code) {
+                code = await fetchModCode(mod.filename);
+                codeCache[mod.filename] = code;
+            }
             if (!selectedMod || selectedMod.filename !== mod.filename) return;
-            const { snippet, truncated } = buildSnippet(res.code);
+            const { snippet, truncated } = buildSnippet(code);
             snippetEl.innerHTML = `<code>${escapeHtml(snippet)}${truncated ? "\n…" : ""}</code>`;
         } catch (err) { snippetEl.innerHTML = `<code>Preview unavailable.</code>`; }
     }
@@ -1391,16 +1356,16 @@ ${rawCode}
         try {
             let code = codeCache[mod.filename];
             if (!code) {
-                const res = await fetchModCode(mod.filename);
-                if (res.locked) throw new Error("Purchase required to play.");
-                code = res.code;
+                code = await fetchModCode(mod.filename);
                 codeCache[mod.filename] = code;
             }
             const sandboxedCode = ModSandboxManager.wrapCode(code, mod);
             const reg = ModManager.installBuiltInMod(mod.name || mod.filename, mod.version || "1.0.0", sandboxedCode);
             ModManager.enableMod(reg.id);
             loadedMods.set(mod.filename, reg.id);
-            selectMod(mod);
+            updateNavCounts();
+            if (activeTab === "mods") selectMod(mod);
+            else if (activeTab === "installed") renderInstalledView(document.getElementById("mh-body-content"));
         } catch (err) { alert(err.message); }
     }
 
@@ -1409,7 +1374,16 @@ ${rawCode}
         if (id && typeof ModManager !== "undefined") {
             ModManager.disableMod(id);
             loadedMods.delete(mod.filename);
-            selectMod(mod);
+            updateNavCounts();
+            if (activeTab === "mods") selectMod(mod);
+            else if (activeTab === "installed") renderInstalledView(document.getElementById("mh-body-content"));
+        }
+    }
+
+    function updateNavCounts() {
+        const installedTabBtn = document.querySelector('.mod-hub-nav-tab[data-tab="installed"]');
+        if (installedTabBtn) {
+            installedTabBtn.textContent = `Installed (${loadedMods.size})`;
         }
     }
 
@@ -1423,35 +1397,27 @@ ${rawCode}
         styleTag = document.createElement("style");
         styleTag.id = "mod-hub-styles";
         styleTag.innerHTML = `
-            .mod-hub-window { position: fixed; top: 10vh; left: 10vw; width: 900px; height: 600px; min-width: 720px; min-height: 480px; background: #141414; border: 1px solid #2e2e2e; border-radius: 8px; box-shadow: 0 20px 50px rgba(0, 0, 0, 0.75), 0 0 0 1px rgba(255, 255, 255, 0.05); color: #eee; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; letter-spacing: -0.01em; -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale; z-index: 100000; display: flex; flex-direction: column; overflow: visible; opacity: 0; transform: scale(0.98); transition: opacity 0.15s ease, transform 0.15s ease; }
+            .mod-hub-window { position: fixed; top: 10vh; left: 10vw; width: 920px; height: 600px; min-width: 720px; min-height: 480px; background: #141414; border: 1px solid #2e2e2e; border-radius: 8px; box-shadow: 0 20px 50px rgba(0, 0, 0, 0.75), 0 0 0 1px rgba(255, 255, 255, 0.05); color: #eee; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; letter-spacing: -0.01em; -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale; z-index: 100000; display: flex; flex-direction: column; overflow: visible; opacity: 0; transform: scale(0.98); transition: opacity 0.15s ease, transform 0.15s ease; }
             .mod-hub-window.show { opacity: 1; transform: scale(1); }
             .mod-hub-window *::-webkit-scrollbar { width: 6px; height: 6px; }
             .mod-hub-window *::-webkit-scrollbar-track { background: transparent; }
             .mod-hub-window *::-webkit-scrollbar-thumb { background: #2c2c2c; border-radius: 3px; }
             .mod-hub-window *::-webkit-scrollbar-thumb:hover { background: #444; }
 
-            .mod-hub-header { background: #191919; padding: 10px 16px; border-bottom: 1px solid #282828; cursor: move; display: flex; justify-content: space-between; align-items: center; border-top-left-radius: 8px; border-top-right-radius: 8px; user-select: none; }
+            .mod-hub-header { background: #191919; padding: 8px 16px; border-bottom: 1px solid #282828; cursor: move; display: flex; justify-content: space-between; align-items: center; border-top-left-radius: 8px; border-top-right-radius: 8px; user-select: none; }
             .mod-hub-brand { font-size: 13px; font-weight: 700; letter-spacing: 0.5px; color: #fff; }
-            .mod-hub-user-pill { font-size: 11px; color: #aaa; background: #222; border: 1px solid #303030; padding: 2px 8px; border-radius: 4px; font-weight: 500; }
+            .mod-hub-top-nav { display: flex; gap: 4px; }
+            .mod-hub-nav-tab { background: transparent; border: 1px solid transparent; border-radius: 5px; color: #888; font-size: 11px; font-weight: 600; padding: 5px 12px; cursor: pointer; transition: all 0.12s ease; }
+            .mod-hub-nav-tab:hover { background: #222; color: #ccc; }
+            .mod-hub-nav-tab.active { background: #272727; border-color: #383838; color: #fff; }
+
+            .mod-hub-user-pill { font-size: 11px; color: #aaa; background: #222; border: 1px solid #303030; padding: 3px 8px; border-radius: 4px; font-weight: 500; }
             .mod-hub-discord-link { display: inline-flex; align-items: center; justify-content: center; color: #888; background: #222; border: 1px solid #303030; border-radius: 4px; padding: 4px 6px; text-decoration: none; transition: all 0.12s ease; }
             .mod-hub-discord-link:hover { color: #fff; background: #2a2a2a; border-color: #444; }
             .mod-hub-close { background: #222; border: 1px solid #303030; color: #888; width: 26px; height: 26px; display: inline-flex; align-items: center; justify-content: center; border-radius: 4px; font-size: 15px; font-weight: bold; cursor: pointer; line-height: 1; transition: all 0.12s ease; }
             .mod-hub-close:hover { background: #2c2c2c; border-color: #555; color: #fff; }
-
-            .mod-hub-nav-btn { background: #222; border: 1px solid #333; color: #eee; border-radius: 4px; font-size: 11px; font-weight: 600; padding: 5px 10px; cursor: pointer; transition: all 0.12s ease; }
-            .mod-hub-nav-btn:hover { background: #2c2c2c; border-color: #444; color: #fff; }
             .mod-hub-logout-btn { background: #1e1e1e; border: 1px solid #303030; color: #999; border-radius: 4px; font-size: 11px; font-weight: 600; padding: 5px 10px; cursor: pointer; transition: all 0.12s ease; }
             .mod-hub-logout-btn:hover { background: #282828; color: #ddd; border-color: #444; }
-
-            .mod-hub-sidebar-tab { position: absolute; right: -24px; top: 50%; transform: translateY(-50%); width: 24px; height: 52px; background: #191919; border: 1px solid #2e2e2e; border-left: none; border-top-right-radius: 6px; border-bottom-right-radius: 6px; display: flex; align-items: center; justify-content: center; cursor: pointer; color: #777; font-size: 11px; font-weight: bold; user-select: none; z-index: 10; transition: all 0.12s ease; }
-            .mod-hub-sidebar-tab:hover { background: #222; color: #fff; }
-            .mod-hub-sidebar-tab-arrow { transition: transform 0.25s ease; }
-            .mod-hub-sidebar-tab.open .mod-hub-sidebar-tab-arrow { transform: rotate(180deg); }
-            .mod-hub-right-sidebar { position: absolute; top: 0; right: 0; width: 180px; height: 100%; background: #141414; border-left: 1px solid #282828; transform: translateX(100%); transition: transform 0.25s cubic-bezier(0.4, 0, 0.2, 1); z-index: 5; display: flex; flex-direction: column; padding: 14px 8px; gap: 4px; overflow-y: auto; }
-            .mod-hub-right-sidebar.open { transform: translateX(0); }
-            .mod-hub-side-btn { display: flex; align-items: center; padding: 8px 12px; background: transparent; border: 1px solid transparent; border-radius: 6px; color: #888; font-size: 12px; font-weight: 500; cursor: pointer; text-align: left; width: 100%; transition: all 0.12s ease; }
-            .mod-hub-side-btn:hover { background: #1c1c1c; color: #ddd; }
-            .mod-hub-side-btn.active { background: #222; border-color: #383838; color: #fff; font-weight: 600; }
 
             .mod-hub-body { display: flex; flex: 1; overflow: hidden; position: relative; border-bottom-left-radius: 8px; border-bottom-right-radius: 8px; }
             .mod-hub-sidebar { width: 48%; min-width: 320px; border-right: 1px solid #262626; display: flex; flex-direction: column; background: #131313; }
@@ -1479,7 +1445,9 @@ ${rawCode}
             .mod-hub-item-stats { display: flex; gap: 8px; font-size: 11px; color: #777; }
             .mod-hub-pinned-badge { font-size: 9px; font-weight: 700; background: #2a2a2a; border: 1px solid #444; color: #fff; padding: 1px 5px; border-radius: 3px; letter-spacing: 0.4px; }
             .mod-hub-cat-badge { font-size: 9px; font-weight: 600; padding: 2px 6px; border-radius: 3px; letter-spacing: 0.4px; background: #222; color: #999; border: 1px solid #333; text-transform: uppercase; }
-            .mod-hub-added-badge { font-size: 9px; font-weight: 700; color: #fff; background: #333; border: 1px solid #444; padding: 2px 6px; border-radius: 3px; letter-spacing: 0.5px; }
+            .mod-hub-card-action-btn { background: #222; border: 1px solid #333; color: #ccc; font-size: 10px; font-weight: 600; padding: 3px 8px; border-radius: 4px; cursor: pointer; transition: all 0.12s ease; }
+            .mod-hub-card-action-btn:hover { background: #2c2c2c; color: #fff; border-color: #555; }
+            .mod-hub-card-action-btn.installed { background: #333; border-color: #555; color: #ff9999; }
 
             .mod-hub-main { flex: 1; display: flex; flex-direction: column; background: #151515; padding: 22px; overflow-y: auto; }
             .mod-hub-stats-row { display: flex; align-items: center; gap: 6px; }
@@ -1500,10 +1468,10 @@ ${rawCode}
             .mod-hub-unload-btn, .mod-hub-edit-btn, .mod-hub-pin-toggle-btn { padding: 8px 16px; background: #202020; border: 1px solid #333; color: #ccc; font-weight: 600; font-size: 12px; border-radius: 6px; cursor: pointer; transition: all 0.12s ease; }
             .mod-hub-unload-btn:hover, .mod-hub-edit-btn:hover, .mod-hub-pin-toggle-btn:hover { background: #2a2a2a; border-color: #444; color: #fff; }
 
-            .mod-hub-tab-page { display: flex; flex-direction: column; width: 100%; }
+            .mod-hub-tab-page { display: flex; flex-direction: column; width: 100%; height: 100%; box-sizing: border-box; }
             .mod-hub-tab-header { font-size: 18px; font-weight: 700; color: #fff; margin: 0 0 12px 0; }
             .mod-hub-card { background: #161616; border: 1px solid #242424; border-radius: 6px; padding: 14px 16px; }
-            .mod-hub-chat-box { flex: 1; min-height: 220px; max-height: 300px; background: #0f0f0f; border: 1px solid #242424; border-radius: 6px; padding: 12px; overflow-y: auto; display: flex; flex-direction: column; gap: 8px; }
+            .mod-hub-chat-box { flex: 1; min-height: 220px; max-height: 380px; background: #0f0f0f; border: 1px solid #242424; border-radius: 6px; padding: 12px; overflow-y: auto; display: flex; flex-direction: column; gap: 8px; }
             .mod-hub-chat-msg { display: flex; gap: 8px; font-size: 12px; }
             .mod-hub-chat-user { font-weight: 600; color: #fff; }
             .mod-hub-chat-text { color: #ccc; word-break: break-word; }

@@ -19,7 +19,7 @@
           }
         } catch (e) {}
 
-        const reg = ModManager.installBuiltInMod("Mod Hub", "2.4.0", code);
+        const reg = ModManager.installBuiltInMod("Mod Hub", "2.5.0", code);
         ModManager.enableMod(reg.id);
         console.log("Mod Hub script installed and enabled successfully via ModManager.");
       } else {
