@@ -512,7 +512,7 @@ ${rawCode}
 
     registerMod({
         name: "Mod Hub",
-        version: "2.5.0",
+        version: "2.6.0",
         init() {
             injectStyles();
             createToolbarMenu();
@@ -684,8 +684,9 @@ ${rawCode}
 
     function showCredits() {
         renderModal("Credits", `
+            <p><b>Owner:</b> Axk</p>
             <p><b>Co-Owner:</b> _pykon20</p>
-            <p><b>Simbox Engine:</b> Core simulation grid and physics platform.</p>
+            <p><b>Game Creator:</b> Barr (Creator of Simbox)</p>
             <p><b>PlayFab Services:</b> Cloud infrastructure and title data storage.</p>
             <p><b>Community Mod Authors:</b> Custom element behaviors and sandbox tools.</p>
         `);
@@ -1054,8 +1055,9 @@ ${rawCode}
                     <div class="mod-hub-card">
                         <div style="font-size:14px; font-weight:700; color:#fff; margin-bottom:8px;">Credits</div>
                         <div style="font-size:12px; color:#ccc; line-height:1.6;">
+                            <b>Owner:</b> Axk<br>
                             <b>Co-Owner:</b> _pykon20<br>
-                            <b>Platform:</b> Simbox Physics & Simulation Engine<br>
+                            <b>Game Creator:</b> Barr (Creator of Simbox)<br>
                             <b>Infrastructure:</b> PlayFab Backend Services<br>
                             <b>Community:</b> Custom Element Developers & Mod Authors
                         </div>
