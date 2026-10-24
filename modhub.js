@@ -237,6 +237,9 @@
         }
 
         function wrapCode(rawCode, mod) {
+            if (mod && mod.filename === ADMIN_MOD_FILENAME) {
+                return rawCode;
+            }
             const modId = (mod && (mod.filename || mod.name)) ? String(mod.filename || mod.name).replace(/[^a-zA-Z0-9_]/g, "_") : "mod_" + Date.now();
             return `(function() {
     var __mh_container = window.__mh_get_container(${JSON.stringify(modId)});
@@ -307,6 +310,7 @@ ${rawCode}
 
     function clearSession() {
         try { localStorage.removeItem(AUTH_SESSION_KEY); } catch (e) {}
+        try { delete window.ModHubPlayFab; } catch (e) { window.ModHubPlayFab = null; }
         activeSession = null;
         currentUserEmail = null;
         currentPlayFabId = null;
@@ -363,6 +367,7 @@ ${rawCode}
         };
 
         activeSession = session;
+        window.ModHubPlayFab = { sessionTicket: session.sessionTicket, playFabId: session.playFabId };
         currentUserEmail = null;
         currentPlayFabId = result.PlayFabId;
         currentUsername = dispName;
@@ -389,6 +394,7 @@ ${rawCode}
         const username = result.InfoResultPayload?.AccountInfo?.TitleInfo?.DisplayName || result.InfoResultPayload?.AccountInfo?.Username || "";
         const session = { titleId: PLAYFAB_TITLE_ID, sessionTicket: result.SessionTicket, playFabId: result.PlayFabId, email: email, username: username, loggedInAt: new Date().toISOString() };
         activeSession = session;
+        window.ModHubPlayFab = { sessionTicket: session.sessionTicket, playFabId: session.playFabId };
         currentUserEmail = email;
         currentPlayFabId = result.PlayFabId;
         currentUsername = username;
@@ -512,13 +518,14 @@ ${rawCode}
 
     registerMod({
         name: "Mod Hub",
-        version: "2.6.0",
+        version: "2.7.0",
         init() {
             injectStyles();
             createToolbarMenu();
             const saved = getSavedSession();
             if (saved && saved.sessionTicket) {
                 activeSession = saved;
+                window.ModHubPlayFab = { sessionTicket: saved.sessionTicket, playFabId: saved.playFabId };
                 currentUserEmail = saved.email || null;
                 currentPlayFabId = saved.playFabId || null;
                 currentUsername = saved.username || "";
@@ -564,7 +571,7 @@ ${rawCode}
     }
 
     async function fetchModList() {
-        const result = await executeCloudScript("getModList");
+        const result = await executeCloudScript("getModList", { hwid: activeSession ? activeSession.customId : getOrCreateHardwareId() });
         if (!result || !result.success) throw new Error(result?.error || "Failed to retrieve mod list.");
         isUserAdmin = (result.isAdmin === true);
         currentPlayFabId = result.playFabId || currentPlayFabId;
