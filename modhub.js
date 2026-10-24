@@ -537,7 +537,7 @@ ${rawCode}
 
     registerMod({
         name: "Mod Hub",
-        version: "2.2.0",
+        version: "2.3.0",
         init() {
             injectStyles();
             createToolbarMenu();
@@ -617,7 +617,7 @@ ${rawCode}
         if (balEl) balEl.textContent = `${currentBalance} MH`;
         const userLabel = document.getElementById("mh-user-display");
         if (userLabel) {
-            userLabel.innerHTML = `${escapeHtml(currentUsername || currentUserEmail || "Logged In")} ${isUserAdmin ? '<b style="color:#ffffff;">(ADMIN)</b>' : ''}`;
+            userLabel.innerHTML = `${escapeHtml(currentUsername || currentUserEmail || "Connected")} ${isUserAdmin ? '<b style="color:#ffffff;">(ADMIN)</b>' : ''}`;
         }
     }
 
@@ -824,11 +824,11 @@ ${rawCode}
                 <span class="mod-hub-sidebar-tab-arrow">&gt;</span>
             </div>
             <div class="mod-hub-header" id="modHubHeader">
-                <div style="display:flex; align-items:center; gap:8px;">
-                    <span style="font-size: 14px; font-weight: bold; color: #fff;">Mod Hub</span>
-                    <span style="font-size: 9px; color: #888;" id="mh-user-display">${escapeHtml(currentUsername || currentUserEmail || "Logged In")} ${isUserAdmin ? '<b style="color:#ffffff;">(ADMIN)</b>' : ''}</span>
+                <div style="display:flex; align-items:center; gap:10px;">
+                    <span class="mod-hub-brand">MOD HUB</span>
+                    <span class="mod-hub-user-pill" id="mh-user-display">${escapeHtml(currentUsername || currentUserEmail || "Connected")} ${isUserAdmin ? '<b style="color:#ffffff;">(ADMIN)</b>' : ''}</span>
                     <a href="https://discord.gg/2nSBHCp2sd" target="_blank" rel="noopener noreferrer" class="mod-hub-discord-link" title="Discord">
-                        <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" style="display:block;">
+                        <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor" style="display:block;">
                             <path d="M20.317 4.37a19.791 19.791 0 0 0-4.885-1.515.074.074 0 0 0-.079.037c-.21.375-.444.864-.608 1.25a18.27 18.27 0 0 0-5.487 0 12.64 12.64 0 0 0-.617-1.25.077.077 0 0 0-.079-.037A19.736 19.736 0 0 0 3.677 4.37a.07.07 0 0 0-.032.027C.533 9.046-.32 13.58.099 18.057a.082.082 0 0 0 .031.057 19.9 19.9 0 0 0 5.993 3.03.078.078 0 0 0 .084-.028c.462-.63.874-1.295 1.226-1.994.021-.041.001-.09-.041-.106a13.107 13.107 0 0 1-1.872-.892.077.077 0 0 1-.008-.128 10.2 10.2 0 0 0 .372-.292.074.074 0 0 1 .077-.01c3.929 1.793 8.18 1.793 12.061 0a.074.074 0 0 1 .078.01c.12.098.246.198.373.292a.077.077 0 0 1-.006.127 12.299 12.299 0 0 1-1.873.893.077.077 0 0 0-.041.107c.36.698.772 1.362 1.225 1.993a.076.076 0 0 0 .084.028 19.839 19.839 0 0 0 6.002-3.03.077.077 0 0 0 .032-.054c.5-5.177-.838-9.674-3.549-13.66a.061.061 0 0 0-.031-.028zM8.02 15.33c-1.183 0-2.157-1.085-2.157-2.419 0-1.333.956-2.419 2.157-2.419 1.21 0 2.176 1.096 2.157 2.42 0 1.333-.956 2.418-2.157 2.418zm7.975 0c-1.183 0-2.157-1.085-2.157-2.419 0-1.333.955-2.419 2.157-2.419 1.21 0 2.176 1.096 2.157 2.42 0 1.333-.946 2.418-2.157 2.418z"/>
                         </svg>
                     </a>
@@ -1286,7 +1286,7 @@ ${rawCode}
                 <div style="display:flex; flex-direction:column; gap:4px; width:100%; overflow:hidden;">
                     <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:4px;">
                         <div class="mod-hub-item-name" title="${escapeHtml(mod.name || mod.filename)}">
-                            ${mod.pinned ? '[Pinned] ' : ''}${escapeHtml(mod.name || mod.filename)}
+                            ${mod.pinned ? '<span class="mod-hub-pinned-badge">PINNED</span> ' : ''}${escapeHtml(mod.name || mod.filename)}
                         </div>
                     </div>
                     <div style="display:flex; justify-content:space-between; align-items:center; margin-top:2px;">
@@ -1422,92 +1422,116 @@ ${rawCode}
         styleTag = document.createElement("style");
         styleTag.id = "mod-hub-styles";
         styleTag.innerHTML = `
-            .mod-hub-window { position: fixed; top: 10vh; left: 10vw; width: 880px; height: 580px; min-width: 680px; min-height: 440px; background: #1a1a1a; border: 1px solid #333; border-radius: 4px; box-shadow: 0 8px 24px rgba(0,0,0,0.6); color: #fff; font-family: sans-serif; z-index: 100000; display: flex; flex-direction: column; overflow: visible; opacity: 0; transform: scale(0.95); transition: opacity 0.15s ease, transform 0.15s ease; }
+            .mod-hub-window { position: fixed; top: 10vh; left: 10vw; width: 900px; height: 600px; min-width: 720px; min-height: 480px; background: #141414; border: 1px solid #2e2e2e; border-radius: 8px; box-shadow: 0 20px 50px rgba(0, 0, 0, 0.75), 0 0 0 1px rgba(255, 255, 255, 0.05); color: #eee; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; letter-spacing: -0.01em; -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale; z-index: 100000; display: flex; flex-direction: column; overflow: visible; opacity: 0; transform: scale(0.98); transition: opacity 0.15s ease, transform 0.15s ease; }
             .mod-hub-window.show { opacity: 1; transform: scale(1); }
-            .mod-hub-sidebar-tab { position: absolute; right: -24px; top: 50%; transform: translateY(-50%); width: 24px; height: 50px; background: #222; border: 1px solid #333; border-left: none; border-top-right-radius: 4px; border-bottom-right-radius: 4px; display: flex; align-items: center; justify-content: center; cursor: pointer; color: #888; font-size: 12px; font-weight: bold; user-select: none; z-index: 10; }
-            .mod-hub-sidebar-tab:hover { background: #2c2c2c; color: #fff; }
-            .mod-hub-sidebar-tab-arrow { transition: transform 0.3s ease; }
-            .mod-hub-sidebar-tab.open .mod-hub-sidebar-tab-arrow { transform: rotate(180deg); }
-            .mod-hub-right-sidebar { position: absolute; top: 0; right: 0; width: 180px; height: 100%; background: #161616; border-left: 1px solid #333; transform: translateX(100%); transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1); z-index: 5; display: flex; flex-direction: column; padding: 12px 8px; gap: 6px; overflow-y: auto; }
-            .mod-hub-right-sidebar.open { transform: translateX(0); }
-            .mod-hub-side-btn { display: flex; align-items: center; gap: 10px; padding: 10px 12px; background: #222; border: 1px solid #333; border-radius: 4px; color: #ccc; font-size: 12px; font-weight: 600; cursor: pointer; text-align: left; width: 100%; }
-            .mod-hub-side-btn:hover { background: #2c2c2c; color: #fff; }
-            .mod-hub-side-btn.active { background: #383838; border-color: #666; color: #fff; }
-            .mod-hub-tab-page { display: flex; flex-direction: column; width: 100%; }
-            .mod-hub-tab-header { font-size: 18px; font-weight: 700; color: #fff; margin: 0 0 10px 0; }
-            .mod-hub-card { background: #181818; border: 1px solid #2d2d2d; border-radius: 4px; padding: 12px 14px; }
-            .mod-hub-chat-box { flex: 1; min-height: 220px; max-height: 300px; background: #121212; border: 1px solid #2d2d2d; border-radius: 4px; padding: 10px; overflow-y: auto; display: flex; flex-direction: column; gap: 8px; }
-            .mod-hub-chat-msg { display: flex; gap: 8px; font-size: 12px; }
-            .mod-hub-chat-user { font-weight: bold; color: #fff; }
-            .mod-hub-chat-text { color: #eee; word-break: break-word; }
-            .mod-hub-chat-time { font-size: 9px; color: #666; margin-left: auto; }
-            .mod-hub-header { background: #222; padding: 10px 14px; border-bottom: 1px solid #333; cursor: move; display: flex; justify-content: space-between; align-items: center; border-top-left-radius: 4px; border-top-right-radius: 4px; }
-            .mod-hub-discord-link { display: inline-flex; align-items: center; justify-content: center; color: #aaa; background: #282828; border: 1px solid #383838; border-radius: 4px; padding: 3px 5px; text-decoration: none; }
-            .mod-hub-discord-link:hover { color: #fff; border-color: #555; }
-            .mod-hub-close { background: none; border: none; color: #888; font-size: 20px; font-weight: bold; cursor: pointer; }
-            .mod-hub-close:hover { color: #fff; }
-            .mod-hub-nav-btn, .mod-hub-logout-btn { background: #2c2c2c; border: 1px solid #444; color: #fff; border-radius: 4px; font-size: 11px; font-weight: bold; padding: 4px 8px; cursor: pointer; }
-            .mod-hub-logout-btn { color: #bbb; background: #242424; }
-            .mod-hub-auth-container { flex: 1; display: flex; align-items: center; justify-content: center; background: #151515; padding: 20px; }
-            .mod-hub-auth-card { background: #202020; border: 1px solid #333; border-radius: 4px; width: 340px; padding: 24px; }
-            .mod-hub-auth-tabs { display: flex; gap: 8px; margin-bottom: 18px; border-bottom: 1px solid #333; padding-bottom: 8px; }
-            .mod-hub-tab-btn { flex: 1; background: transparent; border: none; color: #888; font-size: 13px; font-weight: bold; padding: 6px 0; cursor: pointer; border-bottom: 2px solid transparent; }
-            .mod-hub-tab-btn.active { color: #fff; border-bottom: 2px solid #888; }
-            .mod-hub-auth-form, .mod-hub-input-group { display: flex; flex-direction: column; gap: 8px; }
-            .mod-hub-input-group label { font-size: 11px; color: #aaa; font-weight: 600; }
-            .mod-hub-input-group input, .mod-hub-input-group textarea, .mod-hub-input-group select { background: #141414; border: 1px solid #383838; border-radius: 4px; padding: 8px; color: #fff; font-size: 12px; outline: none; }
-            .mod-hub-auth-status { font-size: 11px; min-height: 14px; }
-            .mod-hub-auth-status.error { color: #ff9999; }
-            .mod-hub-auth-status.success { color: #cccccc; }
-            .mod-hub-auth-submit-btn, .mod-hub-add-btn { background: #383838; border: 1px solid #555; color: #fff; border-radius: 4px; padding: 10px; font-weight: bold; font-size: 12px; cursor: pointer; }
-            .mod-hub-auth-submit-btn:hover, .mod-hub-add-btn:hover { background: #484848; }
-            .mod-hub-auth-footer-links { margin-top: 16px; text-align: center; font-size: 11px; color: #666; }
-            .mod-hub-auth-footer-links a { color: #888; text-decoration: none; }
-            .mod-hub-auth-footer-links a:hover { color: #fff; text-decoration: underline; }
-            
-            .mod-hub-body { display: flex; flex: 1; overflow: hidden; position: relative; }
-            .mod-hub-sidebar { width: 50%; min-width: 320px; border-right: 1px solid #333; display: flex; flex-direction: column; background: #151515; }
-            .mod-hub-sidebar-top { padding: 8px 10px; border-bottom: 1px solid #2a2a2a; display: flex; gap: 6px; }
-            .mod-hub-refresh-btn, .mod-hub-filter-btn { padding: 6px 10px; background: #2c2c2c; border: 1px solid #444; color: #fff; border-radius: 4px; font-weight: 600; font-size: 11px; cursor: pointer; }
-            .mod-hub-filter-btn.active { background: #444; border-color: #666; color: #fff; }
-            
-            .mod-hub-search-box { padding: 6px 10px; display: flex; gap: 6px; background: #181818; border-bottom: 1px solid #282828; }
-            .mod-hub-search-input { flex: 1; background: #121212; border: 1px solid #333; border-radius: 4px; padding: 6px 8px; color: #fff; font-size: 11px; outline: none; }
-            .mod-hub-search-input:focus { border-color: #666; }
-            .mod-hub-search-btn { background: #2c2c2c; border: 1px solid #444; color: #fff; border-radius: 4px; padding: 6px 10px; font-size: 11px; cursor: pointer; }
-            .mod-hub-search-btn:hover { background: #383838; }
-            
-            .mod-hub-cat-pills { padding: 6px 10px; display: flex; flex-wrap: wrap; gap: 4px; background: #151515; border-bottom: 1px solid #282828; }
-            .mod-hub-cat-pill { background: #222; border: 1px solid #333; border-radius: 12px; color: #aaa; font-size: 10px; font-weight: 600; padding: 3px 8px; cursor: pointer; }
-            .mod-hub-cat-pill:hover { background: #2c2c2c; color: #fff; }
-            .mod-hub-cat-pill.active { background: #383838; border-color: #666; color: #fff; }
-            
-            .mod-hub-list { flex: 1; overflow-y: auto; padding: 8px; display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; align-content: start; }
-            .mod-hub-item { padding: 8px 10px; background: #222; border: 1px solid #2d2d2d; border-radius: 4px; cursor: pointer; font-size: 11px; display: flex; flex-direction: column; }
-            .mod-hub-item:hover { background: #292929; border-color: #444; }
-            .mod-hub-item.active { background: #303030; border-color: #777; }
-            .mod-hub-item-name { font-weight: 600; color: #fff; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; }
-            .mod-hub-item-stats { display: flex; gap: 6px; font-size: 10px; color: #888; }
-            
-            .mod-hub-cat-badge { font-size: 8px; font-weight: 800; padding: 2px 5px; border-radius: 3px; letter-spacing: 0.5px; background: #2a2a2a; color: #ccc; border: 1px solid #444; }
-            .mod-hub-added-badge { font-size: 8px; font-weight: bold; color: #fff; background: #444; padding: 1px 4px; border-radius: 3px; }
-            
-            .mod-hub-main { flex: 1; display: flex; flex-direction: column; background: #1a1a1a; padding: 20px; overflow-y: auto; }
-            .mod-hub-stats-row { display: flex; align-items: center; gap: 6px; }
-            .mod-hub-like-btn, .mod-hub-stat { background: #242424; border: 1px solid #383838; color: #ccc; border-radius: 4px; padding: 4px 8px; font-size: 11px; font-weight: 600; cursor: pointer; }
-            .mod-hub-stat { color: #aaa; cursor: default; }
-            .mod-hub-detail { display: flex; flex-direction: column; gap: 10px; width: 100%; }
-            .mod-hub-detail-title { margin: 0; font-size: 18px; font-weight: 700; color: #fff; }
-            .mod-hub-detail-filename { font-family: monospace; font-size: 11px; color: #666; }
-            .mod-hub-detail-desc { font-size: 12px; color: #ccc; line-height: 1.5; background: #141414; border: 1px solid #282828; padding: 8px 10px; border-radius: 4px; }
-            .mod-hub-snippet { background: #111; border: 1px solid #333; border-radius: 4px; padding: 8px 12px; max-height: 120px; overflow: auto; font-family: monospace; font-size: 11px; color: #ddd; white-space: pre; }
-            .mod-hub-btn-row { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 4px; }
-            .mod-hub-unload-btn { padding: 10px 16px; background: #383838; border: 1px solid #555; color: #ccc; font-weight: 700; font-size: 12px; border-radius: 4px; cursor: pointer; }
-            .mod-hub-edit-btn { padding: 10px 14px; background: #2e2e2e; border: 1px solid #444; color: #fff; font-weight: 700; font-size: 12px; border-radius: 4px; cursor: pointer; }
-            .mod-hub-pin-toggle-btn { padding: 10px 14px; background: #333; border: 1px solid #555; color: #fff; font-weight: 700; font-size: 12px; border-radius: 4px; cursor: pointer; }
+            .mod-hub-window *::-webkit-scrollbar { width: 6px; height: 6px; }
+            .mod-hub-window *::-webkit-scrollbar-track { background: transparent; }
+            .mod-hub-window *::-webkit-scrollbar-thumb { background: #2c2c2c; border-radius: 3px; }
+            .mod-hub-window *::-webkit-scrollbar-thumb:hover { background: #444; }
 
-            .mod-hub-modal-backdrop { position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; background: rgba(0,0,0,0.7); z-index: 100005; display: flex; align-items: center; justify-content: center; }
-            .mod-hub-modal-card { background: #1e1e1e; border: 1px solid #383838; border-radius: 4px; width: 440px; max-width: 90vw; padding: 18px; box-shadow: 0 8px 24px rgba(0,0,0,0.8); }
+            .mod-hub-header { background: #191919; padding: 10px 16px; border-bottom: 1px solid #282828; cursor: move; display: flex; justify-content: space-between; align-items: center; border-top-left-radius: 8px; border-top-right-radius: 8px; user-select: none; }
+            .mod-hub-brand { font-size: 13px; font-weight: 700; letter-spacing: 0.5px; color: #fff; }
+            .mod-hub-user-pill { font-size: 11px; color: #aaa; background: #222; border: 1px solid #303030; padding: 2px 8px; border-radius: 4px; font-weight: 500; }
+            .mod-hub-discord-link { display: inline-flex; align-items: center; justify-content: center; color: #888; background: #222; border: 1px solid #303030; border-radius: 4px; padding: 4px 6px; text-decoration: none; transition: all 0.12s ease; }
+            .mod-hub-discord-link:hover { color: #fff; background: #2a2a2a; border-color: #444; }
+            .mod-hub-close { background: #222; border: 1px solid #303030; color: #888; width: 26px; height: 26px; display: inline-flex; align-items: center; justify-content: center; border-radius: 4px; font-size: 15px; font-weight: bold; cursor: pointer; line-height: 1; transition: all 0.12s ease; }
+            .mod-hub-close:hover { background: #2c2c2c; border-color: #555; color: #fff; }
+
+            .mod-hub-nav-btn { background: #222; border: 1px solid #333; color: #eee; border-radius: 4px; font-size: 11px; font-weight: 600; padding: 5px 10px; cursor: pointer; transition: all 0.12s ease; }
+            .mod-hub-nav-btn:hover { background: #2c2c2c; border-color: #444; color: #fff; }
+            .mod-hub-logout-btn { background: #1e1e1e; border: 1px solid #303030; color: #999; border-radius: 4px; font-size: 11px; font-weight: 600; padding: 5px 10px; cursor: pointer; transition: all 0.12s ease; }
+            .mod-hub-logout-btn:hover { background: #282828; color: #ddd; border-color: #444; }
+
+            .mod-hub-sidebar-tab { position: absolute; right: -24px; top: 50%; transform: translateY(-50%); width: 24px; height: 52px; background: #191919; border: 1px solid #2e2e2e; border-left: none; border-top-right-radius: 6px; border-bottom-right-radius: 6px; display: flex; align-items: center; justify-content: center; cursor: pointer; color: #777; font-size: 11px; font-weight: bold; user-select: none; z-index: 10; transition: all 0.12s ease; }
+            .mod-hub-sidebar-tab:hover { background: #222; color: #fff; }
+            .mod-hub-sidebar-tab-arrow { transition: transform 0.25s ease; }
+            .mod-hub-sidebar-tab.open .mod-hub-sidebar-tab-arrow { transform: rotate(180deg); }
+            .mod-hub-right-sidebar { position: absolute; top: 0; right: 0; width: 180px; height: 100%; background: #141414; border-left: 1px solid #282828; transform: translateX(100%); transition: transform 0.25s cubic-bezier(0.4, 0, 0.2, 1); z-index: 5; display: flex; flex-direction: column; padding: 14px 8px; gap: 4px; overflow-y: auto; }
+            .mod-hub-right-sidebar.open { transform: translateX(0); }
+            .mod-hub-side-btn { display: flex; align-items: center; padding: 8px 12px; background: transparent; border: 1px solid transparent; border-radius: 6px; color: #888; font-size: 12px; font-weight: 500; cursor: pointer; text-align: left; width: 100%; transition: all 0.12s ease; }
+            .mod-hub-side-btn:hover { background: #1c1c1c; color: #ddd; }
+            .mod-hub-side-btn.active { background: #222; border-color: #383838; color: #fff; font-weight: 600; }
+
+            .mod-hub-body { display: flex; flex: 1; overflow: hidden; position: relative; border-bottom-left-radius: 8px; border-bottom-right-radius: 8px; }
+            .mod-hub-sidebar { width: 48%; min-width: 320px; border-right: 1px solid #262626; display: flex; flex-direction: column; background: #131313; }
+            .mod-hub-sidebar-top { padding: 10px 12px; border-bottom: 1px solid #202020; display: flex; gap: 8px; }
+            .mod-hub-refresh-btn, .mod-hub-filter-btn { padding: 5px 12px; background: #1c1c1c; border: 1px solid #2e2e2e; color: #bbb; border-radius: 6px; font-weight: 500; font-size: 11px; cursor: pointer; transition: all 0.12s ease; }
+            .mod-hub-refresh-btn:hover, .mod-hub-filter-btn:hover { background: #252525; border-color: #3e3e3e; color: #fff; }
+            .mod-hub-filter-btn.active { background: #2e2e2e; border-color: #555; color: #fff; }
+
+            .mod-hub-search-box { padding: 8px 12px; display: flex; gap: 8px; background: #151515; border-bottom: 1px solid #202020; }
+            .mod-hub-search-input { flex: 1; background: #0e0e0e; border: 1px solid #282828; border-radius: 6px; padding: 6px 10px; color: #eee; font-size: 12px; outline: none; transition: border-color 0.12s ease; }
+            .mod-hub-search-input:focus { border-color: #555; }
+            .mod-hub-search-btn { background: #1c1c1c; border: 1px solid #2e2e2e; color: #bbb; border-radius: 6px; padding: 6px 12px; font-size: 11px; font-weight: 500; cursor: pointer; transition: all 0.12s ease; }
+            .mod-hub-search-btn:hover { background: #252525; border-color: #3e3e3e; color: #fff; }
+
+            .mod-hub-cat-pills { padding: 8px 12px; display: flex; flex-wrap: wrap; gap: 6px; background: #131313; border-bottom: 1px solid #202020; }
+            .mod-hub-cat-pill { background: #1b1b1b; border: 1px solid #282828; border-radius: 4px; color: #888; font-size: 10px; font-weight: 600; letter-spacing: 0.3px; text-transform: uppercase; padding: 3px 8px; cursor: pointer; transition: all 0.12s ease; }
+            .mod-hub-cat-pill:hover { background: #242424; border-color: #383838; color: #eee; }
+            .mod-hub-cat-pill.active { background: #2d2d2d; border-color: #555; color: #fff; }
+
+            .mod-hub-list { flex: 1; overflow-y: auto; padding: 10px; display: flex; flex-direction: column; gap: 6px; }
+            .mod-hub-item { padding: 10px 12px; background: #181818; border: 1px solid #242424; border-radius: 6px; cursor: pointer; font-size: 12px; display: flex; flex-direction: column; gap: 6px; transition: all 0.12s ease; }
+            .mod-hub-item:hover { background: #1f1f1f; border-color: #383838; }
+            .mod-hub-item.active { background: #242424; border-color: #555; }
+            .mod-hub-item-name { font-weight: 600; color: #fff; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
+            .mod-hub-item-stats { display: flex; gap: 8px; font-size: 11px; color: #777; }
+            .mod-hub-pinned-badge { font-size: 9px; font-weight: 700; background: #2a2a2a; border: 1px solid #444; color: #fff; padding: 1px 5px; border-radius: 3px; letter-spacing: 0.4px; }
+            .mod-hub-cat-badge { font-size: 9px; font-weight: 600; padding: 2px 6px; border-radius: 3px; letter-spacing: 0.4px; background: #222; color: #999; border: 1px solid #333; text-transform: uppercase; }
+            .mod-hub-added-badge { font-size: 9px; font-weight: 700; color: #fff; background: #333; border: 1px solid #444; padding: 2px 6px; border-radius: 3px; letter-spacing: 0.5px; }
+
+            .mod-hub-main { flex: 1; display: flex; flex-direction: column; background: #151515; padding: 22px; overflow-y: auto; }
+            .mod-hub-stats-row { display: flex; align-items: center; gap: 6px; }
+            .mod-hub-like-btn, .mod-hub-stat { background: #1f1f1f; border: 1px solid #303030; color: #ccc; border-radius: 6px; padding: 5px 10px; font-size: 11px; font-weight: 600; cursor: pointer; transition: all 0.12s ease; }
+            .mod-hub-like-btn:hover { background: #282828; color: #fff; }
+            .mod-hub-stat { color: #888; cursor: default; }
+
+            .mod-hub-detail { display: flex; flex-direction: column; gap: 14px; width: 100%; }
+            .mod-hub-detail-title { margin: 0; font-size: 20px; font-weight: 700; color: #fff; letter-spacing: -0.01em; }
+            .mod-hub-detail-filename { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 11px; color: #777; margin-top: 3px; }
+            .mod-hub-detail-desc { font-size: 13px; color: #ccc; line-height: 1.6; background: #111; border: 1px solid #222; padding: 12px 14px; border-radius: 6px; white-space: pre-wrap; }
+            .mod-hub-snippet-label { font-size: 11px; font-weight: 600; color: #888; text-transform: uppercase; letter-spacing: 0.5px; }
+            .mod-hub-snippet { background: #0e0e0e; border: 1px solid #222; border-radius: 6px; padding: 10px 14px; max-height: 130px; overflow: auto; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 11px; color: #bbb; white-space: pre; line-height: 1.45; }
+            .mod-hub-btn-row { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 4px; }
+            .mod-hub-add-btn { padding: 8px 18px; background: #f0f0f0; border: 1px solid #fff; color: #111; font-weight: 600; font-size: 12px; border-radius: 6px; cursor: pointer; transition: all 0.12s ease; }
+            .mod-hub-add-btn:hover { background: #ffffff; box-shadow: 0 2px 8px rgba(255,255,255,0.12); }
+            .mod-hub-add-btn:disabled { background: #242424; border-color: #333; color: #666; cursor: not-allowed; box-shadow: none; }
+            .mod-hub-unload-btn, .mod-hub-edit-btn, .mod-hub-pin-toggle-btn { padding: 8px 16px; background: #202020; border: 1px solid #333; color: #ccc; font-weight: 600; font-size: 12px; border-radius: 6px; cursor: pointer; transition: all 0.12s ease; }
+            .mod-hub-unload-btn:hover, .mod-hub-edit-btn:hover, .mod-hub-pin-toggle-btn:hover { background: #2a2a2a; border-color: #444; color: #fff; }
+
+            .mod-hub-tab-page { display: flex; flex-direction: column; width: 100%; }
+            .mod-hub-tab-header { font-size: 18px; font-weight: 700; color: #fff; margin: 0 0 12px 0; }
+            .mod-hub-card { background: #161616; border: 1px solid #242424; border-radius: 6px; padding: 14px 16px; }
+            .mod-hub-chat-box { flex: 1; min-height: 220px; max-height: 300px; background: #0f0f0f; border: 1px solid #242424; border-radius: 6px; padding: 12px; overflow-y: auto; display: flex; flex-direction: column; gap: 8px; }
+            .mod-hub-chat-msg { display: flex; gap: 8px; font-size: 12px; }
+            .mod-hub-chat-user { font-weight: 600; color: #fff; }
+            .mod-hub-chat-text { color: #ccc; word-break: break-word; }
+            .mod-hub-chat-time { font-size: 9px; color: #666; margin-left: auto; }
+
+            .mod-hub-auth-container { flex: 1; display: flex; align-items: center; justify-content: center; background: #111; padding: 24px; }
+            .mod-hub-auth-card { background: #171717; border: 1px solid #282828; border-radius: 8px; width: 350px; padding: 24px; box-shadow: 0 12px 30px rgba(0,0,0,0.6); }
+            .mod-hub-auth-tabs { display: flex; gap: 6px; margin-bottom: 20px; background: #101010; padding: 4px; border-radius: 6px; border: 1px solid #222; }
+            .mod-hub-tab-btn { flex: 1; background: transparent; border: none; color: #777; font-size: 11px; font-weight: 600; padding: 6px 0; cursor: pointer; border-radius: 4px; transition: all 0.12s ease; }
+            .mod-hub-tab-btn:hover { color: #bbb; }
+            .mod-hub-tab-btn.active { background: #222; color: #fff; box-shadow: 0 1px 3px rgba(0,0,0,0.4); }
+            .mod-hub-auth-form, .mod-hub-input-group { display: flex; flex-direction: column; gap: 6px; }
+            .mod-hub-input-group label { font-size: 11px; color: #888; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; }
+            .mod-hub-input-group input, .mod-hub-input-group textarea, .mod-hub-input-group select { background: #0f0f0f; border: 1px solid #282828; border-radius: 6px; padding: 8px 10px; color: #fff; font-size: 12px; outline: none; transition: border-color 0.12s ease; }
+            .mod-hub-input-group input:focus, .mod-hub-input-group textarea:focus { border-color: #555; }
+            .mod-hub-auth-status { font-size: 11px; min-height: 14px; }
+            .mod-hub-auth-status.error { color: #ff8888; }
+            .mod-hub-auth-status.success { color: #ccc; }
+            .mod-hub-auth-submit-btn { background: #f0f0f0; border: 1px solid #fff; color: #111; border-radius: 6px; padding: 9px; font-weight: 600; font-size: 12px; cursor: pointer; transition: all 0.12s ease; }
+            .mod-hub-auth-submit-btn:hover { background: #fff; }
+            .mod-hub-auth-footer-links { margin-top: 18px; text-align: center; font-size: 11px; color: #555; }
+            .mod-hub-auth-footer-links a { color: #777; text-decoration: none; }
+            .mod-hub-auth-footer-links a:hover { color: #bbb; text-decoration: underline; }
+
+            .mod-hub-upload-card { background: #161616; border: 1px solid #242424; border-radius: 8px; padding: 20px; }
+            .mod-hub-loading, .mod-hub-empty-state { padding: 28px 16px; text-align: center; color: #666; font-size: 12px; }
+
+            .mod-hub-modal-backdrop { position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; background: rgba(0,0,0,0.75); z-index: 100005; display: flex; align-items: center; justify-content: center; }
+            .mod-hub-modal-card { background: #171717; border: 1px solid #2e2e2e; border-radius: 8px; width: 440px; max-width: 90vw; padding: 20px; box-shadow: 0 16px 40px rgba(0,0,0,0.85); }
         `;
         document.head.appendChild(styleTag);
     }
