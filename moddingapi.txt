@@ -1,0 +1,284 @@
+SimBox Modding API Reference
+The internal objects and functions the game itself uses to define elements — documented so you can use them too, in
+the Mod Editor's Behavior / OnPlace code boxes (or the built-in Debug → Terminal).
+Contents
+1. ELEMENTS
+2. The Element class
+3. The grid object
+4. Physics helpers (powder / liquid / gas / fire)
+5. Other useful globals
+6. Example custom elements (5 full walkthroughs)
+Your Behavior and OnPlace code each run as the body of a function with the signature (grid, x, y) — exactly the same shape
+every built-in element uses.
+1. ELEMENTS
+A plain object mapping element keys to Element instances.
+ELEMENTS.sand // the Element instance for sand
+ELEMENTS.fire
+ELEMENTS.empty // "nothing here" — use this to clear a cell
+for (const key in ELEMENTS) {
+const elem = ELEMENTS[key];
+}
+2. The Element class
+new Element(name, color, category, properties = {}, behavior = () => {}, onplace = () => {})
+Param Type Notes
+name string display name
+color string CSS color (hex or rgb)
+category string groups elements in the sidebar; "hidden" excludes it from the menu entirely
+properties object see table below
+behavior (grid,x,y) => void runs every tick, for every cell of this element
+onplace (grid,x,y) => void runs once, the instant a cell is placed
+Properties the engine actually reads
+Key Default Meaning
+density 1 used by powder/liquid/gas physics to decide what sinks / floats / swaps
+conductivity — how fast heat moves through this element
+flammable false informational flag other elements/behaviors can check
+temperature 20 starting temperature (°C)
+hidden false if true, hides the element from the sidebar menu
+tags [] see Tags & Variants below
+variants {} see Tags & Variants below
+rainbowUI / shiny false cosmetic sidebar button styling only
+Element instance methods
+elem.withTag(tag) → clone with tag added, applying that tag's variants[tag] override (color/behavior/onplace) if one exists
+elem.withoutTag(tag) → clone with the tag removed
+elem.hasTag(tag) / elem.doesNotHaveTag(tag)
+Tags & variants
+Let one element have alternate states without being a whole separate element (e.g. built-in sand has a wet variant and a molten
+variant):
+variants: {
+wet: {
+color: "#998D68",
+hidden: true, // don't show as its own sidebar button
+behavior: (grid, x, y) => { /* ... */ }
+}
+}
+3. The grid object
+The live simulation grid — also passed to your behavior/onplace code as the grid parameter (same object).
+Method Returns Notes
+grid.get(x, y) cell or
+undefined
+the cell at (x,y), or undefined if out of bounds
+grid.set(x, y, element, overrides={}) — replaces the cell with a new instance of element; overrides sets extra cell
+fields in the same call, e.g. {temperature:400}
+grid.isInside(x, y) boolean bounds check
+grid.touching(x, y, condition,
+returnCoords=false, diag=true)
+boolean/array checks the 8 (or 4) neighbors against condition
+grid.countNearby(x, y, radius, condition) number counts matching neighbors in a circular radius
+grid.canMoveDiagonal(x, y, dx, dy) boolean true if both "side" cells of a diagonal move are empty
+grid.fill(x, y, x2, y2, element) — fills a rectangle with an element
+grid.findCell(cellRef) {x,y} or null reverse-lookup coordinates for a cell object (slow — scans the whole grid)
+grid.cols, grid.rows number grid dimensions in cells
+touching / countNearby condition syntax
+grid.touching(x, y, "fire") // element name match
+grid.touching(x, y, "#burnt") // has tag "burnt"
+grid.touching(x, y, "@Powders") // category match
+grid.touching(x, y, "water!#wet") // is "water" and does NOT have tag "wet"
+grid.touching(x, y, "!ewater") // is NOT "water"
+grid.touching(x, y, "fire & @Gas") // combine with "&"
+grid.touching(x, y, { flammable: true }) // match on a properties key
+grid.touching(x, y, (elem, cell) => elem.name === "lava" && cell.temperature > 800)
+The cell object
+What grid.get(x,y) returns:
+{
+element: ELEMENTS.sand, // the Element instance occupying this cell
+temperature: 20,
+age: 0,
+e: 0,
+color: null, // per-cell color override (null = use element's default)
+// ...plus anything you add yourself, e.g. cell.burning
+}
+Cells are plain objects — you can freely read/write extra fields on them, the same way the built-in firePhysics helper uses
+cell.burning .
+4. Physics helpers
+The same building blocks the real elements use — call these from your Behavior code instead of writing movement logic from
+scratch.
+powderPhysics(grid, x, y, opts = {})
+Falls straight down, rolls diagonally, sinks through liquids/gases based on density.
+{
+diagonalChance: 0.94,
+rollChance: 0.42,
+airDriftChance: 0.30,
+airDriftStrength: 1,
+sinkLiquids: true,
+sinkGases: true,
+densitySwapChance: 0.16,
+densityScale: 1400,
+extraCanEnter: null, // optional fn(target) => boolean
+}
+liquidPhysics(grid, x, y, opts = {})
+Falls, spreads sideways, has convection (hot rises / cold sinks).
+{
+spreadChance: 0.72,
+spreadDist: 5,
+diagonalChance: 0.82,
+sinkPowders: false,
+sinkGases: true,
+densitySwapChance: 0.10,
+densityScale: 1600,
+flowChance: 0.82,
+flowRandomness: 0.35,
+airDriftChance: 0.22,
+airDriftStrength: 1,
+extraCanEnter: null,
+enableConvection: true,
+thermalExpansion: 0.6,
+convectionChance: 0.5,
+}
+gasPhysics(grid, x, y, opts = {})
+Rises, drifts sideways, optionally falls (for heavy gases).
+{
+riseChance: 0.5,
+fallChance: 0.2,
+sidewaysChance: 0.5,
+diagonalChance: 0.5,
+canFall: true,
+canRise: true,
+canMoveSideways: true,
+canMoveDiagonal: true,
+riseSpeed: 1,
+sidewaysSpeed: 1,
+fallSpeed: 1,
+spreadDistance: 1,
+randomizeDirection: true,
+density: null, // defaults to the element's own density property
+extraCanEnter: null,
+canSwapWithGas: true,
+canSwapWithEmpty: true,
+}
+firePhysics(grid, x, y, opts = {})
+Makes an element catch fire from a burning neighbor, heat up, spread fire, and optionally convert into another element at high
+temperature.
+{
+burnElement: ELEMENTS.fire, // what a fully-ignited cell can turn into
+minTemp: 100, // min temp to catch fire from a fire neighbor
+catchChance: 0.5,
+heatSpeed: 2,
+burnTemp: 300, // temp at which the cell itself converts to burnElement
+burnChance: 0.1,
+fireChance: 0.2, // chance to ignite an adjacent empty cell
+putOutTemp: 50, // temp below which "burning" turns back off
+}
+While burning, firePhysics automatically tags the cell's element with "burnt" via withTag / withoutTag — give an element a
+variants.burnt entry if you want a scorched look.
+5. Other useful globals
+Global What it is
+canvas, ctx the main <canvas> element and its 2D context
+selectedElement, selectedElementVariant the element currently picked in the sidebar
+currentCategory current sidebar category filter
+updateElementButtons() rebuilds the sidebar element grid — call after mutating ELEMENTS
+updateCategoryButtons() rebuilds the category chips — call after adding a new category
+The built-in command Terminal (Debug → Terminal) has access to all of these same globals — handy for testing something
+quickly, e.g. grid.set(50,50,ELEMENTS.lava) , before wiring it into a full element.
+6. Example custom elements
+Five complete, ready-to-paste examples. Each shows exactly what to put in the Mod Editor's fields. All of them only use things
+covered above.
+Example 1 — Acid (eats through most things)
+A liquid that slowly dissolves whatever it touches, and evaporates a bit as it works.
+Name: Acid Category: Liquids Color: #a6ff00
+Density: 1.1 Conductivity: 0.05 Start Temp: 20
+Behavior
+const cell = grid.get(x, y);
+if (!cell) return;
+// eat into a random neighbor that isn't empty, acid, or glass
+const dirs = [[0,1],[0,-1],[1,0],[-1,0]];
+const [dx, dy] = dirs[Math.floor(Math.random() * dirs.length)];
+const target = grid.get(x + dx, y + dy);
+if (target && target.element !== ELEMENTS.empty &&
+target.element !== ELEMENTS.acid && target.element !== ELEMENTS.glass) {
+if (Math.random() < 0.05) {
+grid.set(x + dx, y + dy, ELEMENTS.empty);
+// acid gets weaker/used up each reaction
+if (Math.random() < 0.2) {
+grid.set(x, y, ELEMENTS.empty);
+return;
+}
+}
+}
+liquidPhysics(grid, x, y, { density: 1.1, spreadChance: 0.6 });
+OnPlace
+// nothing special needed
+Example 2 — Glowstone (static light source)
+A solid block that just sits there and glows — good template for any inert/static material.
+Name: Glowstone Category: Solids Color: #ffe066
+Density: 3 Conductivity: 0.1 Start Temp: 20
+Behavior
+const cell = grid.get(x, y);
+if (!cell) return;
+// static — never moves, never falls. Just pulses color slightly.
+const pulse = 200 + Math.round(Math.sin(Date.now() / 400) * 40);
+cell.color = `rgb(255, ${pulse}, 80)`;
+OnPlace
+grid.get(x, y).temperature = 40; // starts warm
+Example 3 — Slime (bouncy powder that sticks together)
+Behaves like a powder, but resists falling when surrounded by other slime, and turns green-yellow when disturbed.
+Name: Slime Category: Powders Color: #7ac74f
+Density: 1.6 Conductivity: 0.03 Start Temp: 20
+Behavior
+const cell = grid.get(x, y);
+if (!cell) return;
+// count slime neighbors — clumps of slime are "stickier" and fall less often
+const nearbySlime = grid.countNearby(x, y, 1, "slime");
+if (nearbySlime >= 3 && Math.random() < 0.7) {
+return; // stay put this tick, acting like a solid clump
+}
+powderPhysics(grid, x, y, { diagonalChance: 0.6, rollChance: 0.2 });
+OnPlace
+// nothing special needed
+Example 4 — Firecracker Powder (explosive, chains off fire)
+Reuses firePhysics for ignition, then converts to an expanding burst of empty cells + heat when it finally ignites — a simple
+explosion.
+Name: Firecracker Powder Category: Explosive Color: #ff5050
+Density: 1.8 Flammable: checked Start Temp: 20
+Behavior
+const cell = grid.get(x, y);
+if (!cell) return;
+firePhysics(grid, x, y, {
+minTemp: 80,
+catchChance: 0.9,
+burnTemp: 150,
+burnChance: 1, // instantly "burns" (explodes) once hot enough
+burnElement: ELEMENTS.empty,
+});
+// if firePhysics just converted us, cell.element will no longer be this element —
+// so only run the blast on the tick where we were still Firecracker Powder AND burning
+if (cell.element === ELEMENTS.firecracker_powder && cell.burning) {
+for (let dx = -2; dx <= 2; dx++) {
+for (let dy = -2; dy <= 2; dy++) {
+if (dx * dx + dy * dy > 4) continue;
+const t = grid.get(x + dx, y + dy);
+if (t) {
+grid.set(x + dx, y + dy, ELEMENTS.fire);
+}
+}
+}
+}
+powderPhysics(grid, x, y);
+OnPlace
+// nothing special needed
+Note: the element's key (used as ELEMENTS.firecracker_powder ) is auto-generated from the Name field — spaces become
+underscores and everything is lowercased, so "Firecracker Powder" becomes firecracker_powder .
+Example 5 — Portal Dust (teleports powders that land on it)
+Shows using grid.touching plus custom cell state (not one of the four built-in physics helpers) to make something with
+unique logic.
+Name: Portal Dust Category: Tool Color: #b06bff
+Density: 5 Start Temp: 20 Show in element menu: checked
+Behavior
+const cell = grid.get(x, y);
+if (!cell) return;
+// stays put, glows, and looks for a powder resting directly on top of it
+cell.color = `hsl(${(Date.now() / 10) % 360}, 90%, 65%)`;
+const above = grid.get(x, y - 1);
+if (above && above.element && above.element.category === "Powders") {
+if (Math.random() < 0.15) {
+// teleport it to a random spot near the top of the grid
+const newX = Math.floor(Math.random() * grid.cols);
+const target = grid.get(newX, 1);
+if (target && target.element === ELEMENTS.empty) {
+grid.set(newX, 1, above.element);
+grid.set(x, y - 1, ELEMENTS.empty);
+}
+}
+}
+OnPlace
+// nothing special needed
+Generated for your SimBox mod — pairs with the Mod Editor script that adds a movable element-builder window next to the Debug menu.

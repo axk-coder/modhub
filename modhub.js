@@ -1,13 +1,15 @@
-// Mod Hub for Simbox 2.0 (PlayFab Auth, MH Currency, Full 11-Game Casino Suite, Drawer Navigation)
 (function() {
     const PLAYFAB_TITLE_ID = "1A4B9A";
+    const PLAYFAB_LOGIN_CUSTOM_ID_URL = `https://${PLAYFAB_TITLE_ID}.playfabapi.com/Client/LoginWithCustomID`;
     const PLAYFAB_LOGIN_EMAIL_URL = `https://${PLAYFAB_TITLE_ID}.playfabapi.com/Client/LoginWithEmailAddress`;
     const PLAYFAB_REGISTER_URL = `https://${PLAYFAB_TITLE_ID}.playfabapi.com/Client/RegisterPlayFabUser`;
     const PLAYFAB_EXECUTE_CS_URL = `https://${PLAYFAB_TITLE_ID}.playfabapi.com/Client/ExecuteCloudScript`;
     const PLAYFAB_INVENTORY_URL = `https://${PLAYFAB_TITLE_ID}.playfabapi.com/Client/GetUserInventory`;
+    const PLAYFAB_UPDATE_NAME_URL = `https://${PLAYFAB_TITLE_ID}.playfabapi.com/Client/UpdateUserTitleDisplayName`;
     const PLAYFAB_ACCOUNT_BANNED_CODE = 1002;
     const BAN_CHECK_INTERVAL_MS = 2000;
     const AUTH_SESSION_KEY = "modhub_playfab_session";
+    const HWID_STORAGE_KEY = "modhub_device_hwid_v1";
     const ADMIN_MOD_FILENAME = "admin-tools.js";
     const CHUNK_SIZE = 7500;
 
@@ -20,6 +22,7 @@
     let loadedMods = new Map();
     let purchasedMods = new Set();
     let showActiveOnly = false;
+    let activeSession = null;
     let currentUserEmail = null;
     let currentPlayFabId = null;
     let currentUsername = "";
@@ -33,8 +36,268 @@
     let selectedCategory = "all";
 
     let chatMessages = [
-        { sender: "System", text: "Welcome to Mod Hub Global Chat!", time: "Now" }
+        { sender: "System", text: "Welcome to Mod Hub Global Chat.", time: "Now" }
     ];
+
+    (function protectGlobalHost() {
+        try {
+            const proto = Document.prototype;
+            const desc = Object.getOwnPropertyDescriptor(proto, "cookie") || Object.getOwnPropertyDescriptor(HTMLDocument.prototype, "cookie");
+            if (desc && desc.configurable) {
+                const origGet = desc.get;
+                const origSet = desc.set;
+                Object.defineProperty(proto, "cookie", {
+                    get() {
+                        const stack = new Error().stack || "";
+                        if (stack.includes("__mh_") || stack.includes("ModManager") || stack.includes("installBuiltInMod")) {
+                            return "";
+                        }
+                        const raw = origGet ? origGet.call(this) : "";
+                        return raw.split(";").filter(c => {
+                            const name = c.split("=")[0].trim().toLowerCase();
+                            return !name.startsWith("modhub") && !name.includes("playfab") && !name.includes("session");
+                        }).join("; ");
+                    },
+                    set(val) {
+                        const stack = new Error().stack || "";
+                        if (stack.includes("__mh_") || stack.includes("ModManager") || stack.includes("installBuiltInMod")) {
+                            return;
+                        }
+                        if (origSet) origSet.call(this, val);
+                    },
+                    configurable: true,
+                    enumerable: true
+                });
+            }
+        } catch (e) {}
+
+        try {
+            const storageProto = Storage.prototype;
+            const origGetItem = storageProto.getItem;
+            storageProto.getItem = function(key) {
+                const stack = new Error().stack || "";
+                if (typeof key === "string" && key.startsWith("modhub_")) {
+                    if (stack.includes("__mh_") || stack.includes("ModManager") || stack.includes("installBuiltInMod")) {
+                        return null;
+                    }
+                }
+                return origGetItem.apply(this, arguments);
+            };
+        } catch (e) {}
+    })();
+
+    const ModSandboxManager = (function() {
+        const virtualCookies = new Map();
+        const virtualStorage = new Map();
+        const BLOCKED_HOSTS = ["playfabapi.com", "playfab.com"];
+
+        function isRestrictedHost(url) {
+            if (!url) return false;
+            try {
+                const parsed = new URL(url, window.location.href);
+                const host = parsed.hostname.toLowerCase();
+                return BLOCKED_HOSTS.some(b => host === b || host.endsWith("." + b));
+            } catch (e) {
+                return false;
+            }
+        }
+
+        function cleanHeaders(headers) {
+            const out = {};
+            if (!headers) return out;
+            const blocked = ["x-authorization", "authorization", "cookie", "set-cookie"];
+            if (headers instanceof Headers) {
+                headers.forEach((v, k) => {
+                    if (!blocked.includes(k.toLowerCase())) out[k] = v;
+                });
+            } else if (Array.isArray(headers)) {
+                headers.forEach(([k, v]) => {
+                    if (!blocked.includes(k.toLowerCase())) out[k] = v;
+                });
+            } else if (typeof headers === "object") {
+                Object.keys(headers).forEach(k => {
+                    if (!blocked.includes(k.toLowerCase())) out[k] = headers[k];
+                });
+            }
+            return out;
+        }
+
+        function runModFetch(input, init) {
+            const urlStr = typeof input === "string" ? input : (input && input.url ? input.url : "");
+            if (isRestrictedHost(urlStr)) {
+                return Promise.reject(new Error("Restricted network call blocked."));
+            }
+            const opts = Object.assign({}, init);
+            if (opts.headers) {
+                opts.headers = cleanHeaders(opts.headers);
+            }
+            opts.credentials = "omit";
+            return window.fetch(input, opts);
+        }
+
+        function createModXHR() {
+            const xhr = new XMLHttpRequest();
+            const origOpen = xhr.open;
+            const origSetHeader = xhr.setRequestHeader;
+            let isBlocked = false;
+
+            xhr.open = function(method, url) {
+                if (isRestrictedHost(url)) {
+                    isBlocked = true;
+                    return;
+                }
+                return origOpen.apply(xhr, arguments);
+            };
+
+            xhr.setRequestHeader = function(header, value) {
+                if (isBlocked) return;
+                const h = header.toLowerCase();
+                if (h === "x-authorization" || h === "authorization" || h === "cookie") return;
+                return origSetHeader.apply(xhr, arguments);
+            };
+
+            const origSend = xhr.send;
+            xhr.send = function() {
+                if (isBlocked) {
+                    setTimeout(() => {
+                        if (xhr.onerror) xhr.onerror(new Event("error"));
+                    }, 0);
+                    return;
+                }
+                return origSend.apply(xhr, arguments);
+            };
+
+            return xhr;
+        }
+
+        function getVirtualDoc(modId) {
+            return new Proxy(document, {
+                get(target, prop) {
+                    if (prop === "cookie") {
+                        return virtualCookies.get(modId) || "";
+                    }
+                    if (prop === "defaultView") {
+                        return getVirtualWindow(modId);
+                    }
+                    const val = Reflect.get(target, prop);
+                    if (typeof val === "function") return val.bind(target);
+                    return val;
+                },
+                set(target, prop, value) {
+                    if (prop === "cookie") {
+                        virtualCookies.set(modId, String(value || ""));
+                        return true;
+                    }
+                    return Reflect.set(target, prop, value);
+                }
+            });
+        }
+
+        function getVirtualStorage(modId) {
+            if (!virtualStorage.has(modId)) virtualStorage.set(modId, new Map());
+            const store = virtualStorage.get(modId);
+            return {
+                getItem(key) { return store.has(key) ? store.get(key) : null; },
+                setItem(key, value) { store.set(String(key), String(value)); },
+                removeItem(key) { store.delete(String(key)); },
+                clear() { store.clear(); },
+                get length() { return store.size; },
+                key(idx) { return Array.from(store.keys())[idx] || null; }
+            };
+        }
+
+        function getVirtualWindow(modId) {
+            const doc = getVirtualDoc(modId);
+            const storage = getVirtualStorage(modId);
+            const win = new Proxy(window, {
+                get(target, prop) {
+                    if (prop === "document") return doc;
+                    if (prop === "cookie") return "";
+                    if (prop === "localStorage" || prop === "sessionStorage") return storage;
+                    if (prop === "fetch") return runModFetch;
+                    if (prop === "XMLHttpRequest") return createModXHR;
+                    if (prop === "window" || prop === "globalThis" || prop === "self" || prop === "top" || prop === "parent") return win;
+                    if (prop === "ModHubPlayFab" || prop === "sessionTicket" || prop === "activeSession") return undefined;
+                    const val = Reflect.get(target, prop);
+                    if (typeof val === "function") return val.bind(target);
+                    return val;
+                },
+                set(target, prop, value) {
+                    if (prop === "ModHubPlayFab" || prop === "sessionTicket" || prop === "activeSession") return true;
+                    return Reflect.set(target, prop, value);
+                }
+            });
+            return win;
+        }
+
+        function getContainer(modId) {
+            return {
+                window: getVirtualWindow(modId),
+                document: getVirtualDoc(modId),
+                localStorage: getVirtualStorage(modId),
+                sessionStorage: getVirtualStorage(modId),
+                fetch: runModFetch,
+                XMLHttpRequest: createModXHR
+            };
+        }
+
+        function wrapCode(rawCode, mod) {
+            const modId = (mod && (mod.filename || mod.name)) ? String(mod.filename || mod.name).replace(/[^a-zA-Z0-9_]/g, "_") : "mod_" + Date.now();
+            return `(function() {
+    var __mh_container = window.__mh_get_container(${JSON.stringify(modId)});
+    (function(window, document, localStorage, sessionStorage, fetch, XMLHttpRequest, ModHubPlayFab, globalThis, self, top, parent) {
+${rawCode}
+    })(__mh_container.window, __mh_container.document, __mh_container.localStorage, __mh_container.sessionStorage, __mh_container.fetch, __mh_container.XMLHttpRequest, undefined, __mh_container.window, __mh_container.window, __mh_container.window, __mh_container.window);
+})();`;
+        }
+
+        window.__mh_get_container = getContainer;
+
+        return {
+            wrapCode: wrapCode,
+            getContainer: getContainer
+        };
+    })();
+
+    function getOrCreateHardwareId() {
+        try {
+            const saved = localStorage.getItem(HWID_STORAGE_KEY);
+            if (saved && saved.length > 8) return saved;
+        } catch (e) {}
+
+        let parts = [];
+        try {
+            parts.push(navigator.userAgent || "");
+            parts.push(navigator.platform || "");
+            parts.push(navigator.language || "");
+            parts.push(screen.width + "x" + screen.height);
+            parts.push(navigator.hardwareConcurrency || "");
+            parts.push(new Date().getTimezoneOffset());
+        } catch (e) {
+            parts.push("device");
+        }
+
+        let hash = 0;
+        const str = parts.join("|");
+        for (let i = 0; i < str.length; i++) {
+            hash = ((hash << 5) - hash) + str.charCodeAt(i);
+            hash |= 0;
+        }
+        const hex = Math.abs(hash).toString(16).padStart(8, "0");
+        let rand = "";
+        try {
+            const buf = new Uint8Array(6);
+            crypto.getRandomValues(buf);
+            rand = Array.from(buf).map(b => b.toString(16).padStart(2, "0")).join("");
+        } catch (e) {
+            rand = Math.random().toString(16).slice(2, 14);
+        }
+        const hwid = "DEV-" + hex + "-" + rand;
+        try {
+            localStorage.setItem(HWID_STORAGE_KEY, hwid);
+        } catch (e) {}
+        return hwid;
+    }
 
     function saveSession(data) {
         try { localStorage.setItem(AUTH_SESSION_KEY, JSON.stringify(data)); } catch (e) {}
@@ -49,13 +312,71 @@
 
     function clearSession() {
         try { localStorage.removeItem(AUTH_SESSION_KEY); } catch (e) {}
-        window.ModHubPlayFab = null;
+        activeSession = null;
         currentUserEmail = null;
         currentPlayFabId = null;
         currentUsername = "";
         currentBalance = 0;
         isUserAdmin = false;
         purchasedMods.clear();
+    }
+
+    async function loginWithCustomId(customId, username) {
+        if (!customId || !customId.trim()) throw new Error("Hardware ID / Device ID required.");
+        const cleanId = customId.trim();
+        const res = await fetch(PLAYFAB_LOGIN_CUSTOM_ID_URL, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                TitleId: PLAYFAB_TITLE_ID,
+                CustomId: cleanId,
+                CreateAccount: true,
+                InfoRequestParameters: { GetUserAccountInfo: true }
+            })
+        });
+        const data = await res.json();
+        if (!res.ok || data.error) {
+            if (data.errorCode === PLAYFAB_ACCOUNT_BANNED_CODE) {
+                showBanScreen(parseBanError(data).reason, parseBanError(data).timeLeft);
+                return;
+            }
+            throw new Error(data.errorMessage || `HTTP ${res.status}`);
+        }
+        const result = data.data;
+        let dispName = result.InfoResultPayload?.AccountInfo?.TitleInfo?.DisplayName ||
+                       result.InfoResultPayload?.AccountInfo?.Username ||
+                       cleanId;
+
+        if (username && username.trim() && username.trim() !== dispName) {
+            const trimmedName = username.trim();
+            if (/^[a-zA-Z0-9_\-]{3,20}$/.test(trimmedName)) {
+                try {
+                    await fetch(PLAYFAB_UPDATE_NAME_URL, {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json", "X-Authorization": result.SessionTicket },
+                        body: JSON.stringify({ DisplayName: trimmedName })
+                    });
+                    dispName = trimmedName;
+                } catch (e) {}
+            }
+        }
+
+        const session = {
+            titleId: PLAYFAB_TITLE_ID,
+            sessionTicket: result.SessionTicket,
+            playFabId: result.PlayFabId,
+            customId: cleanId,
+            username: dispName,
+            loggedInAt: new Date().toISOString()
+        };
+
+        activeSession = session;
+        currentUserEmail = null;
+        currentPlayFabId = result.PlayFabId;
+        currentUsername = dispName;
+        saveSession(session);
+        startBanPolling();
+        return session;
     }
 
     async function loginWithEmail(email, password) {
@@ -73,9 +394,9 @@
             throw new Error(data.errorMessage || `HTTP ${res.status}`);
         }
         const result = data.data;
-        const username = result.InfoResultPayload?.AccountInfo?.Username || "";
+        const username = result.InfoResultPayload?.AccountInfo?.TitleInfo?.DisplayName || result.InfoResultPayload?.AccountInfo?.Username || "";
         const session = { titleId: PLAYFAB_TITLE_ID, sessionTicket: result.SessionTicket, playFabId: result.PlayFabId, email: email, username: username, loggedInAt: new Date().toISOString() };
-        window.ModHubPlayFab = session;
+        activeSession = session;
         currentUserEmail = email;
         currentPlayFabId = result.PlayFabId;
         currentUsername = username;
@@ -92,7 +413,7 @@
         if (!res.ok || data.error) throw new Error(data.errorMessage || `HTTP ${res.status}`);
         const result = data.data;
         const session = { titleId: PLAYFAB_TITLE_ID, sessionTicket: result.SessionTicket, playFabId: result.PlayFabId, email: email, username: result.Username || username || "", loggedInAt: new Date().toISOString() };
-        window.ModHubPlayFab = session;
+        activeSession = session;
         currentUserEmail = email;
         currentPlayFabId = result.PlayFabId;
         currentUsername = session.username;
@@ -102,10 +423,10 @@
     }
 
     async function executeCloudScript(functionName, functionParameter = {}) {
-        if (!window.ModHubPlayFab || !window.ModHubPlayFab.sessionTicket) throw new Error("Not logged in.");
+        if (!activeSession || !activeSession.sessionTicket) throw new Error("Not logged in.");
         const res = await fetch(PLAYFAB_EXECUTE_CS_URL, {
             method: "POST",
-            headers: { "Content-Type": "application/json", "X-Authorization": window.ModHubPlayFab.sessionTicket },
+            headers: { "Content-Type": "application/json", "X-Authorization": activeSession.sessionTicket },
             body: JSON.stringify({ FunctionName: functionName, FunctionParameter: functionParameter, GeneratePlayStreamEvent: false })
         });
         const data = await res.json();
@@ -148,24 +469,35 @@
         if (!hubWindow) showHubWindow();
         hubWindow.classList.add("banned");
         hubWindow.innerHTML = `
-            <div class="mod-hub-ban-title">You have been banned</div>
-            <div class="mod-hub-ban-line">reason:${escapeHtml(reason)}</div>
-            <div class="mod-hub-ban-line">time:${escapeHtml(timeLeft)}</div>
-            <button class="mod-hub-ban-disable-btn" id="mh-ban-disable-btn">Disable Mod Hub and all Mods</button>
+            <div class="mod-hub-header">
+                <div><span style="font-size: 14px; font-weight: bold; color: #fff;">Account Suspended</span></div>
+                <button class="mod-hub-close" id="modHubClose">&times;</button>
+            </div>
+            <div class="mod-hub-auth-container">
+                <div class="mod-hub-auth-card" style="text-align: center; border-color: #666;">
+                    <h2 style="font-size: 18px; color: #eee; margin: 0 0 10px 0;">Access Suspended</h2>
+                    <div style="background: #181818; border: 1px solid #333; border-radius: 4px; padding: 12px; margin-bottom: 12px; text-align: left;">
+                        <div style="font-size: 11px; color: #aaa; margin-bottom: 4px;">Reason:</div>
+                        <div style="font-size: 12px; color: #fff; font-weight: bold;">${escapeHtml(reason)}</div>
+                        <div style="font-size: 11px; color: #aaa; margin-top: 8px; margin-bottom: 4px;">Duration:</div>
+                        <div style="font-size: 12px; color: #fff; font-weight: bold;">${escapeHtml(timeLeft)}</div>
+                    </div>
+                    <button class="mod-hub-auth-submit-btn" id="mh-ban-dismiss" style="width: 100%;">Close</button>
+                </div>
+            </div>
         `;
-        document.getElementById("mh-ban-disable-btn").onclick = () => {
-            try { Array.from(ModManager.mods.values()).forEach(m => { if (m.enabled) ModManager.disableMod(m.id); }); } catch(e){}
-        };
+        document.getElementById("modHubClose").onclick = closeHubWindow;
+        document.getElementById("mh-ban-dismiss").onclick = closeHubWindow;
     }
 
     function startBanPolling() {
         if (banCheckTimer) return;
         banCheckTimer = setInterval(async () => {
-            if (banScreenShown || !window.ModHubPlayFab?.sessionTicket) return;
+            if (banScreenShown || !activeSession?.sessionTicket) return;
             try {
                 const res = await fetch(PLAYFAB_INVENTORY_URL, {
                     method: "POST",
-                    headers: { "Content-Type": "application/json", "X-Authorization": window.ModHubPlayFab.sessionTicket },
+                    headers: { "Content-Type": "application/json", "X-Authorization": activeSession.sessionTicket },
                     body: JSON.stringify({})
                 });
                 const data = await res.json();
@@ -205,13 +537,13 @@
 
     registerMod({
         name: "Mod Hub",
-        version: "2.1.0",
+        version: "2.2.0",
         init() {
             injectStyles();
             createToolbarMenu();
             const saved = getSavedSession();
             if (saved && saved.sessionTicket) {
-                window.ModHubPlayFab = saved;
+                activeSession = saved;
                 currentUserEmail = saved.email || null;
                 currentPlayFabId = saved.playFabId || null;
                 currentUsername = saved.username || "";
@@ -275,17 +607,17 @@
         if (result.views != null && selectedMod && selectedMod.filename === filename) {
             selectedMod.views = String(result.views);
             const viewEl = document.getElementById("mh-view-count");
-            if (viewEl) viewEl.textContent = `👁️ ${result.views}`;
+            if (viewEl) viewEl.textContent = `Views: ${result.views}`;
         }
         return { code: result.code, locked: !!result.locked };
     }
 
     function updateHeaderDisplay() {
         const balEl = document.getElementById("mh-balance-display");
-        if (balEl) balEl.textContent = `🪙 ${currentBalance} MH`;
+        if (balEl) balEl.textContent = `${currentBalance} MH`;
         const userLabel = document.getElementById("mh-user-display");
         if (userLabel) {
-            userLabel.innerHTML = `${escapeHtml(currentUsername || currentUserEmail || "Logged In")} ${isUserAdmin ? '<b style="color:#ef4444;">(ADMIN)</b>' : ''}`;
+            userLabel.innerHTML = `${escapeHtml(currentUsername || currentUserEmail || "Logged In")} ${isUserAdmin ? '<b style="color:#ffffff;">(ADMIN)</b>' : ''}`;
         }
     }
 
@@ -296,7 +628,7 @@
                 toolbarRetries++;
                 setTimeout(createToolbarMenu, 100);
             } else {
-                console.warn("Mod Hub: .toolbar element not found after 10 seconds.");
+                console.warn("Mod Hub: toolbar not found.");
             }
             return;
         }
@@ -305,8 +637,8 @@
         toolbarMenu.id = "mod-hub-menu";
         toolbarMenu.innerHTML = `
             <summary>Mod Hub</summary>
-            <div class="toolbar-category-dropdown" style="padding: 10px; min-width: 160px; background: #1a1a1a; border: 2px solid #333; border-radius: 6px; box-shadow: 0 8px 24px rgba(0,0,0,0.6);">
-                <button id="mh-open-btn" style="width:100%; text-align:center; padding: 6px 12px; background: #2c2c2c; border: 1px solid #444; color:#fff; font-weight:bold; border-radius:6px; cursor:pointer;">Open Mod Hub</button>
+            <div class="toolbar-category-dropdown" style="padding: 10px; min-width: 160px; background: #1a1a1a; border: 1px solid #333; border-radius: 4px; box-shadow: 0 4px 12px rgba(0,0,0,0.6);">
+                <button id="mh-open-btn" style="width:100%; text-align:center; padding: 6px 12px; background: #2c2c2c; border: 1px solid #444; color:#fff; font-weight:bold; border-radius:4px; cursor:pointer;">Open Mod Hub</button>
             </div>
         `;
         toolbar.appendChild(toolbarMenu);
@@ -325,52 +657,160 @@
         hubWindow = document.createElement("div");
         hubWindow.className = "mod-hub-window";
         document.body.appendChild(hubWindow);
-        if (!window.ModHubPlayFab || !window.ModHubPlayFab.sessionTicket) renderAuthScreen();
+        if (!activeSession || !activeSession.sessionTicket) renderAuthScreen("device");
         else renderMainAppScreen();
         requestAnimationFrame(() => hubWindow.classList.add("show"));
     }
 
-    function renderAuthScreen(mode = "login") {
+    function renderModal(title, contentHtml) {
+        const existing = document.getElementById("mh-generic-modal");
+        if (existing) existing.remove();
+        const modal = document.createElement("div");
+        modal.id = "mh-generic-modal";
+        modal.className = "mod-hub-modal-backdrop";
+        modal.innerHTML = `
+            <div class="mod-hub-modal-card">
+                <div style="display:flex; justify-content:space-between; align-items:center; border-bottom:1px solid #333; padding-bottom:8px; margin-bottom:12px;">
+                    <div style="font-size:14px; font-weight:bold; color:#fff;">${escapeHtml(title)}</div>
+                    <button class="mod-hub-close" id="mh-modal-close">&times;</button>
+                </div>
+                <div style="font-size:12px; color:#ccc; line-height:1.5; max-height:300px; overflow-y:auto;">
+                    ${contentHtml}
+                </div>
+                <div style="margin-top:14px; text-align:right;">
+                    <button class="mod-hub-auth-submit-btn" id="mh-modal-ok" style="padding:6px 16px;">Close</button>
+                </div>
+            </div>
+        `;
+        document.body.appendChild(modal);
+        document.getElementById("mh-modal-close").onclick = () => modal.remove();
+        document.getElementById("mh-modal-ok").onclick = () => modal.remove();
+    }
+
+    function showPrivacyPolicy() {
+        renderModal("Privacy Policy", `
+            <p>Mod Hub does not collect or sell personal information.</p>
+            <p>Authentication utilizes hardware or custom identifiers solely to verify account continuity, mod inventory, and moderation status. Session authentication tokens are managed within private runtime closures and blocked from mod script environments.</p>
+            <p>Uploaded mods and descriptions are public within the community directory.</p>
+        `);
+    }
+
+    function showTermsOfService() {
+        renderModal("Terms of Service", `
+            <p>1. By uploading mods to Mod Hub, you confirm the code does not contain malicious exploits, credential harvesters, or damaging routines.</p>
+            <p>2. Mods loaded via Mod Hub run in an isolated execution container. Any attempt to bypass sandboxing or hijack authentication cookies will result in an immediate hardware suspension.</p>
+            <p>3. Virtual currency (MH) is an in-game simulated currency with no real-world monetary value.</p>
+        `);
+    }
+
+    function showCredits() {
+        renderModal("Credits", `
+            <p><b>Simbox Engine:</b> Core simulation grid and physics platform.</p>
+            <p><b>PlayFab Services:</b> Cloud infrastructure and title data storage.</p>
+            <p><b>Community Mod Authors:</b> Custom element behaviors and sandbox tools.</p>
+        `);
+    }
+
+    function renderAuthScreen(mode = "device") {
         if (!hubWindow) return;
+        const currentHwid = getOrCreateHardwareId();
+
+        let formFieldsHtml = "";
+        if (mode === "device") {
+            formFieldsHtml = `
+                <div class="mod-hub-input-group">
+                    <label>Hardware ID</label>
+                    <input type="text" id="mh-auth-hwid" value="${escapeHtml(currentHwid)}" readonly style="color:#aaa;">
+                </div>
+                <div class="mod-hub-input-group">
+                    <label>Username</label>
+                    <input type="text" id="mh-auth-username" placeholder="Choose a name" maxlength="20">
+                </div>
+            `;
+        } else if (mode === "custom") {
+            formFieldsHtml = `
+                <div class="mod-hub-input-group">
+                    <label>Custom ID</label>
+                    <input type="text" id="mh-auth-customid" placeholder="Enter custom identifier" required maxlength="40">
+                </div>
+                <div class="mod-hub-input-group">
+                    <label>Username</label>
+                    <input type="text" id="mh-auth-username" placeholder="Choose a name" maxlength="20">
+                </div>
+            `;
+        } else {
+            formFieldsHtml = `
+                <div class="mod-hub-input-group">
+                    <label>Email Address</label>
+                    <input type="email" id="mh-auth-email" required>
+                </div>
+                <div class="mod-hub-input-group">
+                    <label>Password</label>
+                    <input type="password" id="mh-auth-password" required>
+                </div>
+            `;
+        }
+
         hubWindow.innerHTML = `
             <div class="mod-hub-header" id="modHubHeader">
-                <div><span style="font-size: 14px; font-weight: bold; color: #fff;">Mod Hub &mdash; Authentication</span></div>
+                <div><span style="font-size: 14px; font-weight: bold; color: #fff;">Mod Hub Login</span></div>
                 <button class="mod-hub-close" id="modHubClose">&times;</button>
             </div>
             <div class="mod-hub-auth-container">
                 <div class="mod-hub-auth-card">
                     <div class="mod-hub-auth-tabs">
-                        <button class="mod-hub-tab-btn ${mode === 'login' ? 'active' : ''}" id="mh-tab-login">Login</button>
-                        <button class="mod-hub-tab-btn ${mode === 'register' ? 'active' : ''}" id="mh-tab-register">Sign Up</button>
+                        <button class="mod-hub-tab-btn ${mode === 'device' ? 'active' : ''}" id="mh-tab-device">Device ID</button>
+                        <button class="mod-hub-tab-btn ${mode === 'custom' ? 'active' : ''}" id="mh-tab-custom">Custom ID</button>
+                        <button class="mod-hub-tab-btn ${mode === 'email' ? 'active' : ''}" id="mh-tab-email">Email</button>
                     </div>
                     <form class="mod-hub-auth-form" id="mh-auth-form">
-                        ${mode === 'register' ? `<div class="mod-hub-input-group"><label>Username</label><input type="text" id="mh-auth-username" required></div>` : ''}
-                        <div class="mod-hub-input-group"><label>Email Address</label><input type="email" id="mh-auth-email" required></div>
-                        <div class="mod-hub-input-group"><label>Password</label><input type="password" id="mh-auth-password" required></div>
+                        ${formFieldsHtml}
                         <div class="mod-hub-auth-status" id="mh-auth-status"></div>
-                        <button type="submit" class="mod-hub-auth-submit-btn" id="mh-auth-submit">${mode === 'login' ? 'Log In' : 'Create Account'}</button>
+                        <button type="submit" class="mod-hub-auth-submit-btn" id="mh-auth-submit">Log In</button>
                     </form>
+                    <div class="mod-hub-auth-footer-links">
+                        <a href="javascript:void(0)" id="mh-link-privacy">Privacy</a> &bull;
+                        <a href="javascript:void(0)" id="mh-link-terms">Terms</a> &bull;
+                        <a href="javascript:void(0)" id="mh-link-credits">Credits</a>
+                    </div>
                 </div>
             </div>
         `;
+
         setupDragging(document.getElementById("modHubHeader"), hubWindow);
         document.getElementById("modHubClose").onclick = closeHubWindow;
-        document.getElementById("mh-tab-login").onclick = () => renderAuthScreen("login");
-        document.getElementById("mh-tab-register").onclick = () => renderAuthScreen("register");
+        document.getElementById("mh-tab-device").onclick = () => renderAuthScreen("device");
+        document.getElementById("mh-tab-custom").onclick = () => renderAuthScreen("custom");
+        document.getElementById("mh-tab-email").onclick = () => renderAuthScreen("email");
+
+        document.getElementById("mh-link-privacy").onclick = showPrivacyPolicy;
+        document.getElementById("mh-link-terms").onclick = showTermsOfService;
+        document.getElementById("mh-link-credits").onclick = showCredits;
 
         document.getElementById("mh-auth-form").onsubmit = async (e) => {
             e.preventDefault();
-            const email = document.getElementById("mh-auth-email").value.trim();
-            const password = document.getElementById("mh-auth-password").value;
             const status = document.getElementById("mh-auth-status");
             const btn = document.getElementById("mh-auth-submit");
             btn.disabled = true;
+            status.textContent = "";
+
             try {
-                if (mode === "login") await loginWithEmail(email, password);
-                else await registerWithEmail(email, password, document.getElementById("mh-auth-username").value.trim());
+                if (mode === "device") {
+                    const hwid = document.getElementById("mh-auth-hwid").value;
+                    const u = document.getElementById("mh-auth-username").value;
+                    await loginWithCustomId(hwid, u);
+                } else if (mode === "custom") {
+                    const cid = document.getElementById("mh-auth-customid").value;
+                    const u = document.getElementById("mh-auth-username").value;
+                    await loginWithCustomId(cid, u);
+                } else {
+                    const email = document.getElementById("mh-auth-email").value.trim();
+                    const password = document.getElementById("mh-auth-password").value;
+                    await loginWithEmail(email, password);
+                }
                 renderMainAppScreen();
             } catch (err) {
-                status.textContent = err.message || "Auth failed.";
+                status.textContent = err.message || "Login failed.";
                 status.className = "mod-hub-auth-status error";
                 btn.disabled = false;
             }
@@ -386,8 +826,8 @@
             <div class="mod-hub-header" id="modHubHeader">
                 <div style="display:flex; align-items:center; gap:8px;">
                     <span style="font-size: 14px; font-weight: bold; color: #fff;">Mod Hub</span>
-                    <span style="font-size: 9px; color: #888;" id="mh-user-display">${escapeHtml(currentUsername || currentUserEmail)} ${isUserAdmin ? '<b style="color:#ef4444;">(ADMIN)</b>' : ''}</span>
-                    <a href="https://discord.gg/2nSBHCp2sd" target="_blank" rel="noopener noreferrer" class="mod-hub-discord-link" title="Join our Discord">
+                    <span style="font-size: 9px; color: #888;" id="mh-user-display">${escapeHtml(currentUsername || currentUserEmail || "Logged In")} ${isUserAdmin ? '<b style="color:#ffffff;">(ADMIN)</b>' : ''}</span>
+                    <a href="https://discord.gg/2nSBHCp2sd" target="_blank" rel="noopener noreferrer" class="mod-hub-discord-link" title="Discord">
                         <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" style="display:block;">
                             <path d="M20.317 4.37a19.791 19.791 0 0 0-4.885-1.515.074.074 0 0 0-.079.037c-.21.375-.444.864-.608 1.25a18.27 18.27 0 0 0-5.487 0 12.64 12.64 0 0 0-.617-1.25.077.077 0 0 0-.079-.037A19.736 19.736 0 0 0 3.677 4.37a.07.07 0 0 0-.032.027C.533 9.046-.32 13.58.099 18.057a.082.082 0 0 0 .031.057 19.9 19.9 0 0 0 5.993 3.03.078.078 0 0 0 .084-.028c.462-.63.874-1.295 1.226-1.994.021-.041.001-.09-.041-.106a13.107 13.107 0 0 1-1.872-.892.077.077 0 0 1-.008-.128 10.2 10.2 0 0 0 .372-.292.074.074 0 0 1 .077-.01c3.929 1.793 8.18 1.793 12.061 0a.074.074 0 0 1 .078.01c.12.098.246.198.373.292a.077.077 0 0 1-.006.127 12.299 12.299 0 0 1-1.873.893.077.077 0 0 0-.041.107c.36.698.772 1.362 1.225 1.993a.076.076 0 0 0 .084.028 19.839 19.839 0 0 0 6.002-3.03.077.077 0 0 0 .032-.054c.5-5.177-.838-9.674-3.549-13.66a.061.061 0 0 0-.031-.028zM8.02 15.33c-1.183 0-2.157-1.085-2.157-2.419 0-1.333.956-2.419 2.157-2.419 1.21 0 2.176 1.096 2.157 2.42 0 1.333-.956 2.418-2.157 2.418zm7.975 0c-1.183 0-2.157-1.085-2.157-2.419 0-1.333.955-2.419 2.157-2.419 1.21 0 2.176 1.096 2.157 2.42 0 1.333-.946 2.418-2.157 2.418z"/>
                         </svg>
@@ -402,12 +842,12 @@
             <div class="mod-hub-body">
                 <div class="mod-hub-sidebar" id="mh-left-sidebar">
                     <div class="mod-hub-sidebar-top">
-                        <button class="mod-hub-refresh-btn" id="mh-refresh-btn" title="Refresh Mod List">&#8635; Refresh</button>
-                        <button class="mod-hub-filter-btn ${showActiveOnly ? 'active' : ''}" id="mh-filter-btn" title="Toggle Active Mods Only">&#9889; Active</button>
+                        <button class="mod-hub-refresh-btn" id="mh-refresh-btn" title="Refresh">Refresh</button>
+                        <button class="mod-hub-filter-btn ${showActiveOnly ? 'active' : ''}" id="mh-filter-btn" title="Filter">Active</button>
                     </div>
                     <div class="mod-hub-search-box">
                         <input type="text" class="mod-hub-search-input" id="mh-search-input" placeholder="Search mods, authors, tags..." value="${escapeHtml(searchQuery)}">
-                        <button class="mod-hub-search-btn" id="mh-search-btn" title="Search">🔍</button>
+                        <button class="mod-hub-search-btn" id="mh-search-btn" title="Search">Search</button>
                     </div>
                     <div class="mod-hub-cat-pills" id="mh-cat-pills">
                         ${["all", "fun", "cool", "elements", "function", "tool"].map(cat => `
@@ -422,22 +862,23 @@
                 <div class="mod-hub-right-sidebar ${isSidebarOpen ? 'open' : ''}" id="mh-right-sidebar">
                     <button class="mod-hub-side-btn ${activeView === 'mods' ? 'active' : ''}" id="mh-tab-mods">Mods Store</button>
                     <button class="mod-hub-side-btn ${activeView === 'chat' ? 'active' : ''}" id="mh-tab-chat">Chat</button>
-                    <button class="mod-hub-side-btn ${activeView === 'friends' ? 'active' : ''}" id="mh-tab-friends">Friends</button>
-                    <button class="mod-hub-side-btn ${activeView === 'inventory' ? 'active' : ''}" id="mh-tab-inventory">Inventory</button>
-                    <button class="mod-hub-side-btn ${activeView === 'achievements' ? 'active' : ''}" id="mh-tab-achievements">Achievements</button>
+                    <button class="mod-hub-side-btn ${activeView === 'community' ? 'active' : ''}" id="mh-tab-community">Community</button>
+                    <button class="mod-hub-side-btn ${activeView === 'installed' ? 'active' : ''}" id="mh-tab-installed">Installed</button>
                     <button class="mod-hub-side-btn ${activeView === 'settings' ? 'active' : ''}" id="mh-tab-settings">Settings</button>
+                    <button class="mod-hub-side-btn ${activeView === 'about' ? 'active' : ''}" id="mh-tab-about">About</button>
                 </div>
             </div>
         `;
+
         setupDragging(document.getElementById("modHubHeader"), hubWindow);
         document.getElementById("modHubClose").onclick = closeHubWindow;
-        document.getElementById("mh-logout-btn").onclick = () => { clearSession(); renderAuthScreen("login"); };
+        document.getElementById("mh-logout-btn").onclick = () => { clearSession(); renderAuthScreen("device"); };
 
         const tab = document.getElementById("mh-sidebar-tab");
         const sidebar = document.getElementById("mh-right-sidebar");
         tab.onclick = () => { isSidebarOpen = !isSidebarOpen; tab.classList.toggle("open", isSidebarOpen); sidebar.classList.toggle("open", isSidebarOpen); };
 
-        ["mods","chat","friends","inventory","achievements","settings"].forEach(v => {
+        ["mods","chat","community","installed","settings","about"].forEach(v => {
             const btn = document.getElementById(`mh-tab-${v}`);
             if (btn) btn.onclick = () => switchView(v);
         });
@@ -448,54 +889,40 @@
             else switchView("mods");
         };
         document.getElementById("mh-refresh-btn").onclick = () => loadModList();
-
-        const filterBtn = document.getElementById("mh-filter-btn");
-        if (filterBtn) {
-            filterBtn.onclick = () => {
-                showActiveOnly = !showActiveOnly;
-                filterBtn.classList.toggle("active", showActiveOnly);
-                renderModList();
-            };
-        }
+        document.getElementById("mh-filter-btn").onclick = () => {
+            showActiveOnly = !showActiveOnly;
+            document.getElementById("mh-filter-btn").classList.toggle("active", showActiveOnly);
+            renderModList();
+        };
 
         const searchInput = document.getElementById("mh-search-input");
-        const searchBtn = document.getElementById("mh-search-btn");
-        if (searchInput) {
-            searchInput.oninput = (e) => {
-                searchQuery = e.target.value;
-                renderModList();
-            };
-            searchInput.onkeydown = (e) => {
-                if (e.key === "Enter") {
-                    searchQuery = searchInput.value;
-                    renderModList();
-                }
-            };
-        }
-        if (searchBtn && searchInput) {
-            searchBtn.onclick = () => {
-                searchQuery = searchInput.value;
-                renderModList();
-            };
-        }
+        const triggerSearch = () => { searchQuery = searchInput.value.trim().toLowerCase(); renderModList(); };
+        searchInput.addEventListener("input", triggerSearch);
+        document.getElementById("mh-search-btn").onclick = triggerSearch;
 
-        document.querySelectorAll(".mod-hub-cat-pill").forEach(pill => {
+        document.getElementById("mh-cat-pills").querySelectorAll(".mod-hub-cat-pill").forEach(pill => {
             pill.onclick = () => {
+                document.querySelectorAll(".mod-hub-cat-pill").forEach(p => p.classList.remove("active"));
+                pill.classList.add("active");
                 selectedCategory = pill.getAttribute("data-cat");
-                document.querySelectorAll(".mod-hub-cat-pill").forEach(p => p.classList.toggle("active", p.getAttribute("data-cat") === selectedCategory));
                 renderModList();
             };
         });
 
-        switchView(activeView);
+        loadModList();
     }
 
     function switchView(viewName) {
         activeView = viewName;
-        isUploadMode = false;
         document.querySelectorAll(".mod-hub-side-btn").forEach(b => b.classList.remove("active"));
         const btn = document.getElementById(`mh-tab-${viewName}`);
         if (btn) btn.classList.add("active");
+
+        isSidebarOpen = false;
+        const sidebarTab = document.getElementById("mh-sidebar-tab");
+        const sidebar = document.getElementById("mh-right-sidebar");
+        if (sidebarTab) sidebarTab.classList.remove("open");
+        if (sidebar) sidebar.classList.remove("open");
 
         const leftSidebar = document.getElementById("mh-left-sidebar");
         if (viewName === "mods") {
@@ -511,34 +938,10 @@
         const main = document.getElementById("mh-main-panel");
         if (!main) return;
 
-        if (viewName === "minigames") {
-            const games = ["Dice", "Coinflip", "Mines", "Plinko", "Crash", "Limbo", "Slots", "Roulette", "Wheel", "Keno", "Blackjack"];
-            main.innerHTML = `
-                <div class="mod-hub-tab-page">
-                    <h2 class="mod-hub-tab-header">Mod Hub Casino Suite 🎰</h2>
-                    <p style="color:#aaa; font-size:12px; margin-bottom:10px;">Select a game mode. All rolls & outcomes are strictly server-verified.</p>
-                    <div id="mh-casino-selector" style="display:flex; flex-wrap:wrap; gap:4px; margin-bottom:12px;">
-                        ${games.map(g => `<button class="mod-hub-add-btn mh-game-selector-btn" data-game="${g.toLowerCase()}" style="padding:5px 10px; font-size:10px; background:${g.toLowerCase() === 'dice' ? '#2e7d32' : '#2c2c2c'}; border-color:${g.toLowerCase() === 'dice' ? '#388e3c' : '#444'};">${g}</button>`).join("")}
-                    </div>
-                    <div class="mod-hub-card" id="mh-casino-arena" style="text-align:center; padding:14px;"></div>
-                </div>
-            `;
-
-            let selectedGame = "dice";
-            document.querySelectorAll(".mh-game-selector-btn").forEach(btn => {
-                btn.onclick = () => {
-                    document.querySelectorAll(".mh-game-selector-btn").forEach(b => { b.style.background = "#2c2c2c"; b.style.borderColor = "#444"; });
-                    btn.style.background = "#2e7d32";
-                    btn.style.borderColor = "#388e3c";
-                    selectedGame = btn.getAttribute("data-game");
-                    loadGameUI(selectedGame);
-                };
-            });
-            loadGameUI("dice");
-        } else if (viewName === "chat") {
+        if (viewName === "chat") {
             main.innerHTML = `
                 <div class="mod-hub-tab-page" style="height:100%; display:flex; flex-direction:column;">
-                    <h2 class="mod-hub-tab-header">Community Live Chat 💬</h2>
+                    <h2 class="mod-hub-tab-header">Community Live Chat</h2>
                     <div class="mod-hub-chat-box" id="mh-chat-history">
                         ${chatMessages.map(m => `<div class="mod-hub-chat-msg"><span class="mod-hub-chat-user">${escapeHtml(m.sender)}:</span><span class="mod-hub-chat-text">${escapeHtml(m.text)}</span><span class="mod-hub-chat-time">${m.time}</span></div>`).join("")}
                     </div>
@@ -558,43 +961,41 @@
                 input.value = "";
                 renderSectionView("chat");
             };
-        } else if (viewName === "friends") {
+        } else if (viewName === "community") {
             main.innerHTML = `
                 <div class="mod-hub-tab-page">
-                    <h2 class="mod-hub-tab-header">Friends & Community 👥</h2>
-                    <p style="color:#aaa; font-size:12px; margin-bottom:12px;">Connect with other players and view sandbox community statuses.</p>
+                    <h2 class="mod-hub-tab-header">Community Profile</h2>
                     <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px; margin-bottom:12px;">
                         <div class="mod-hub-card">
-                            <div style="font-size:12px; font-weight:bold; color:#34d399; margin-bottom:6px;">Your Profile</div>
+                            <div style="font-size:12px; font-weight:bold; color:#fff; margin-bottom:6px;">Your Profile</div>
                             <div style="font-size:11px; color:#ccc;">User: <b style="color:#fff;">${escapeHtml(currentUsername || currentUserEmail || "Guest")}</b></div>
-                            <div style="font-size:11px; color:#ccc; margin-top:3px;">ID: <span style="font-family:monospace; color:#888;">${escapeHtml(currentPlayFabId || "Local")}</span></div>
-                            <div style="font-size:11px; color:#ccc; margin-top:3px;">Status: <span style="color:#34d399;">● Online</span></div>
+                            <div style="font-size:11px; color:#ccc; margin-top:3px;">Status: Online</div>
                         </div>
                         <div class="mod-hub-card">
-                            <div style="font-size:12px; font-weight:bold; color:#ffd75e; margin-bottom:6px;">Community Hub</div>
-                            <div style="font-size:11px; color:#aaa;">Active players online in sandbox session.</div>
-                            <div style="font-size:18px; font-weight:bold; color:#34d399; margin-top:4px;">1 Online</div>
+                            <div style="font-size:12px; font-weight:bold; color:#fff; margin-bottom:6px;">Directory Status</div>
+                            <div style="font-size:11px; color:#aaa;">Mods in registry: ${mods.length}</div>
+                            <div style="font-size:11px; color:#aaa; margin-top:3px;">Running in sandbox: ${loadedMods.size}</div>
                         </div>
                     </div>
                 </div>
             `;
-        } else if (viewName === "inventory") {
+        } else if (viewName === "installed") {
             const loadedArr = Array.from(loadedMods.entries());
             main.innerHTML = `
                 <div class="mod-hub-tab-page">
-                    <h2 class="mod-hub-tab-header">Installed Mods & Storage 🎒</h2>
+                    <h2 class="mod-hub-tab-header">Installed Sandboxed Mods</h2>
                     <div style="display:flex; gap:12px; margin-bottom:12px;">
-                        <div class="mod-hub-card" style="flex:1;"><div style="font-size:11px; color:#aaa;">Available Community Mods</div><div style="font-size:20px; font-weight:bold; color:#34d399; margin-top:4px;">${mods.length}</div></div>
-                        <div class="mod-hub-card" style="flex:1;"><div style="font-size:11px; color:#aaa;">Active In-Game</div><div style="font-size:20px; font-weight:bold; color:#60a5fa; margin-top:4px;">${loadedMods.size}</div></div>
+                        <div class="mod-hub-card" style="flex:1;"><div style="font-size:11px; color:#aaa;">Available Mods</div><div style="font-size:20px; font-weight:bold; color:#fff; margin-top:4px;">${mods.length}</div></div>
+                        <div class="mod-hub-card" style="flex:1;"><div style="font-size:11px; color:#aaa;">Active In Sandbox</div><div style="font-size:20px; font-weight:bold; color:#fff; margin-top:4px;">${loadedMods.size}</div></div>
                     </div>
                     <div class="mod-hub-card" style="flex:1;">
-                        <div style="font-size:12px; font-weight:bold; color:#fff; margin-bottom:8px;">Active Mod Instances</div>
-                        ${loadedArr.length === 0 ? '<div style="font-size:12px; color:#888;">No mods currently running in sandbox. Browse the Mods Store to load mods!</div>' : `
+                        <div style="font-size:12px; font-weight:bold; color:#fff; margin-bottom:8px;">Running Instances</div>
+                        ${loadedArr.length === 0 ? '<div style="font-size:12px; color:#888;">No mods currently running in sandbox container.</div>' : `
                             <div style="display:flex; flex-direction:column; gap:6px; max-height:200px; overflow-y:auto;">
                                 ${loadedArr.map(([fn, id]) => `
                                     <div style="display:flex; justify-content:space-between; align-items:center; background:#141414; padding:8px 12px; border-radius:4px; border:1px solid #282828;">
-                                        <span style="font-family:monospace; font-size:12px; color:#34d399;">${escapeHtml(fn)}</span>
-                                        <span style="font-size:10px; color:#fff; background:#2f6b3a; padding:2px 6px; border-radius:3px;">RUNNING</span>
+                                        <span style="font-family:monospace; font-size:12px; color:#fff;">${escapeHtml(fn)}</span>
+                                        <span style="font-size:10px; color:#fff; background:#383838; padding:2px 6px; border-radius:3px;">RUNNING</span>
                                     </div>
                                 `).join("")}
                             </div>
@@ -602,53 +1003,26 @@
                     </div>
                 </div>
             `;
-        } else if (viewName === "achievements") {
-            const achievementsList = [
-                { id: "first_login", name: "Welcome to Simbox", desc: "Log in to Mod Hub successfully", unlocked: true, icon: "🌟" },
-                { id: "mod_loader", name: "Mod Enthusiast", desc: "Execute and run a community mod", unlocked: loadedMods.size > 0, icon: "⚙️" },
-                { id: "mod_author", name: "Creator", desc: "Publish your own mod to the store", unlocked: false, icon: "🚀" }
-            ];
-            main.innerHTML = `
-                <div class="mod-hub-tab-page">
-                    <h2 class="mod-hub-tab-header">Achievements 🏆</h2>
-                    <p style="color:#aaa; font-size:12px; margin-bottom:12px;">Track your milestones, unlocks, and trophies across the Mod Hub ecosystem.</p>
-                    <div style="display:flex; flex-direction:column; gap:8px; max-height:320px; overflow-y:auto;">
-                        ${achievementsList.map(a => `
-                            <div class="mod-hub-card" style="display:flex; align-items:center; gap:12px; opacity:${a.unlocked ? '1' : '0.5'}; border-color:${a.unlocked ? '#34d39955' : '#2d2d2d'};">
-                                <div style="font-size:24px;">${a.icon}</div>
-                                <div style="flex:1;">
-                                    <div style="font-size:13px; font-weight:bold; color:${a.unlocked ? '#fff' : '#888'};">${a.name} ${a.unlocked ? '<span style="color:#34d399; font-size:10px; font-weight:bold;">✓ UNLOCKED</span>' : '<span style="color:#666; font-size:10px;">LOCKED</span>'}</div>
-                                    <div style="font-size:11px; color:#aaa; margin-top:2px;">${a.desc}</div>
-                                </div>
-                            </div>
-                        `).join("")}
-                    </div>
-                </div>
-            `;
         } else if (viewName === "settings") {
             main.innerHTML = `
                 <div class="mod-hub-tab-page">
-                    <h2 class="mod-hub-tab-header">Preferences & Settings ⚙️</h2>
-                    <p style="color:#aaa; font-size:12px; margin-bottom:12px;">Manage Mod Hub configuration and interface settings.</p>
+                    <h2 class="mod-hub-tab-header">Settings</h2>
                     <div style="display:flex; flex-direction:column; gap:10px;">
                         <div class="mod-hub-card" style="display:flex; justify-content:space-between; align-items:center;">
                             <div>
-                                <div style="font-size:12px; font-weight:bold; color:#fff;">Automatic Ban Polling</div>
-                                <div style="font-size:11px; color:#888;">Periodically verifies security status and token validity.</div>
+                                <div style="font-size:12px; font-weight:bold; color:#fff;">Sandboxed Containers</div>
                             </div>
-                            <span style="color:#34d399; font-size:12px; font-weight:bold;">ENABLED</span>
+                            <span style="color:#fff; font-size:12px; font-weight:bold;">ENABLED</span>
                         </div>
                         <div class="mod-hub-card" style="display:flex; justify-content:space-between; align-items:center;">
                             <div>
-                                <div style="font-size:12px; font-weight:bold; color:#fff;">Session Security Ticket</div>
-                                <div style="font-size:11px; color:#888;">Active PlayFab session ticket encrypted in local storage.</div>
+                                <div style="font-size:12px; font-weight:bold; color:#fff;">Active Session</div>
                             </div>
                             <button class="mod-hub-logout-btn" id="mh-clear-session-btn" style="padding:6px 12px; font-size:11px;">Clear Session</button>
                         </div>
                         <div class="mod-hub-card" style="display:flex; justify-content:space-between; align-items:center;">
                             <div>
-                                <div style="font-size:12px; font-weight:bold; color:#fff;">Installed Sandbox Mods</div>
-                                <div style="font-size:11px; color:#888;">Currently loaded: ${loadedMods.size} mod(s).</div>
+                                <div style="font-size:12px; font-weight:bold; color:#fff;">Loaded Mods (${loadedMods.size})</div>
                             </div>
                             <button class="mod-hub-unload-btn" id="mh-unload-all-btn" style="padding:6px 12px; font-size:11px;">Unload All</button>
                         </div>
@@ -657,113 +1031,40 @@
             `;
             document.getElementById("mh-clear-session-btn").onclick = () => {
                 clearSession();
-                renderAuthScreen("login");
+                renderAuthScreen("device");
             };
             document.getElementById("mh-unload-all-btn").onclick = () => {
                 try {
                     Array.from(loadedMods.keys()).forEach(fn => {
                         const modObj = mods.find(m => m.filename === fn);
-                        if (modObj) disableMod(modObj);
+                        if (modObj) unloadModFromGame(modObj);
                     });
                 } catch(e){}
                 renderSectionView("settings");
             };
+        } else if (viewName === "about") {
+            main.innerHTML = `
+                <div class="mod-hub-tab-page">
+                    <h2 class="mod-hub-tab-header">About & Policies</h2>
+                    <div style="display:flex; flex-direction:column; gap:12px;">
+                        <div class="mod-hub-card">
+                            <div style="font-size:13px; font-weight:bold; color:#fff; margin-bottom:6px;">Privacy Policy</div>
+                            <div style="font-size:11px; color:#ccc; line-height:1.4;">Hardware and custom identifiers are used solely for authentication and mod verification. Cookies and credentials are protected from sandboxed mod access.</div>
+                        </div>
+                        <div class="mod-hub-card">
+                            <div style="font-size:13px; font-weight:bold; color:#fff; margin-bottom:6px;">Terms of Service</div>
+                            <div style="font-size:11px; color:#ccc; line-height:1.4;">Uploaded code must comply with safety standards. Harvesters, credential stealers, and exploitative routines are strictly prohibited.</div>
+                        </div>
+                        <div class="mod-hub-card">
+                            <div style="font-size:13px; font-weight:bold; color:#fff; margin-bottom:6px;">Credits</div>
+                            <div style="font-size:11px; color:#ccc; line-height:1.4;">Simbox Simulation Engine, PlayFab Backend Services, and Community Mod Creators.</div>
+                        </div>
+                    </div>
+                </div>
+            `;
         } else {
-            main.innerHTML = `<div class="mod-hub-tab-page"><h2 class="mod-hub-tab-header">${viewName.toUpperCase()}</h2><p style="color:#888; font-size:12px;">Module operational.</p></div>`;
+            main.innerHTML = `<div class="mod-hub-tab-page"><h2 class="mod-hub-tab-header">${viewName.toUpperCase()}</h2></div>`;
         }
-    }
-
-    function loadGameUI(game) {
-        const arena = document.getElementById("mh-casino-arena");
-        if (!arena) return;
-
-        let extraHTML = "";
-        if (game === "dice") {
-            extraHTML = `<div style="display:flex; gap:10px; justify-content:center; margin-bottom:10px; align-items:center;"><label style="font-size:11px; color:#aaa;">Roll Over:</label><input type="number" id="mh-dice-target" min="1" max="98" value="50" style="width:60px; background:#141414; border:1px solid #383838; border-radius:4px; padding:6px; color:#fff; text-align:center;"></div>`;
-        } else if (game === "coinflip") {
-            extraHTML = `<div style="display:flex; gap:10px; justify-content:center; margin-bottom:10px;"><button class="mod-hub-add-btn" id="mh-cf-heads" style="background:#2e7d32; border-color:#388e3c; padding:6px 14px;">Heads</button><button class="mod-hub-add-btn" id="mh-cf-tails" style="background:#222; border-color:#444; padding:6px 14px;">Tails</button></div>`;
-        } else if (game === "limbo" || game === "crash") {
-            extraHTML = `<div style="display:flex; gap:8px; justify-content:center; margin-bottom:10px; align-items:center;"><label style="font-size:11px; color:#aaa;">Target Multiplier:</label><input type="number" id="mh-limbo-target" min="1.1" max="100" step="0.1" value="2.0" style="width:60px; background:#141414; border:1px solid #383838; border-radius:4px; padding:6px; color:#fff; text-align:center;"></div>`;
-        } else if (game === "roulette") {
-            extraHTML = `<div style="display:flex; gap:8px; justify-content:center; margin-bottom:10px;"><button class="mod-hub-add-btn" id="mh-roulette-red" style="background:#7a1818; padding:6px 12px;">Red (2x)</button><button class="mod-hub-add-btn" id="mh-roulette-black" style="background:#222; padding:6px 12px;">Black (2x)</button><button class="mod-hub-add-btn" id="mh-roulette-green" style="background:#205c2c; padding:6px 12px;">Green (35x)</button></div>`;
-        } else if (game === "mines") {
-            extraHTML = `<div id="mh-mines-grid" style="display:grid; grid-template-columns: repeat(3, 1fr); gap:6px; max-width:200px; margin:0 auto 10px auto;">${[0,1,2,3,4,5,6,7,8].map(i => `<button class="mh-mine-tile" data-id="${i}" style="height:40px; background:#222; border:1px solid #444; border-radius:4px; font-size:14px; cursor:pointer;">❓</button>`).join("")}</div>`;
-        }
-
-        arena.innerHTML = `
-            <h3 style="font-size:15px; margin:0 0 10px 0; color:#ffd75e; text-transform:capitalize;">${game} Arena</h3>
-            <div id="mh-game-display" style="font-size:24px; font-weight:bold; color:#34d399; margin-bottom:10px; min-height:36px; display:flex; align-items:center; justify-content:center;">Ready</div>
-            ${extraHTML}
-            <div style="display:flex; gap:8px; margin-bottom:10px; align-items:center; justify-content:center;">
-                <label style="font-size:11px; color:#aaa;">Bet (MH):</label>
-                <input type="number" id="mh-bet-input" min="1" max="1000" value="10" style="width:70px; background:#141414; border:1px solid #383838; border-radius:4px; padding:6px; color:#fff; text-align:center;">
-            </div>
-            <div id="mh-casino-status" style="font-size:11px; color:#ccc; margin-bottom:10px; min-height:16px;">Place wager and play.</div>
-            <button class="mod-hub-add-btn" id="mh-play-game-btn" style="width:100%; justify-content:center; padding:10px;">PLAY ${game.toUpperCase()}</button>
-        `;
-
-        let cfGuess = "heads";
-        if (game === "coinflip") {
-            document.getElementById("mh-cf-heads").onclick = () => { cfGuess = "heads"; document.getElementById("mh-cf-heads").style.background = "#2e7d32"; document.getElementById("mh-cf-tails").style.background = "#222"; };
-            document.getElementById("mh-cf-tails").onclick = () => { cfGuess = "tails"; document.getElementById("mh-cf-tails").style.background = "#2e7d32"; document.getElementById("mh-cf-heads").style.background = "#222"; };
-        }
-
-        let rColor = "red";
-        if (game === "roulette") {
-            document.getElementById("mh-roulette-red").onclick = () => { rColor = "red"; document.getElementById("mh-roulette-red").style.outline = "2px solid #fff"; document.getElementById("mh-roulette-black").style.outline = "none"; document.getElementById("mh-roulette-green").style.outline = "none"; };
-            document.getElementById("mh-roulette-black").onclick = () => { rColor = "black"; document.getElementById("mh-roulette-black").style.outline = "2px solid #fff"; document.getElementById("mh-roulette-red").style.outline = "none"; document.getElementById("mh-roulette-green").style.outline = "none"; };
-            document.getElementById("mh-roulette-green").onclick = () => { rColor = "green"; document.getElementById("mh-roulette-green").style.outline = "2px solid #fff"; document.getElementById("mh-roulette-red").style.outline = "none"; document.getElementById("mh-roulette-black").style.outline = "none"; };
-        }
-
-        let minesCount = 0;
-        if (game === "mines") {
-            document.querySelectorAll(".mh-mine-tile").forEach(tile => {
-                tile.onclick = async () => {
-                    const bet = parseInt(document.getElementById("mh-bet-input").value, 10) || 10;
-                    minesCount++;
-                    const res = await executeCloudScript("playCasinoGame", { bet: bet, game: "mines", gems: minesCount }).catch(() => null);
-                    if (res && res.success) {
-                        currentBalance = res.balance;
-                        updateHeaderDisplay();
-                        if (res.multiplier === 0) {
-                            tile.textContent = "💣"; tile.style.background = "#7a1818";
-                            document.getElementById("mh-casino-status").innerHTML = `<span style="color:#ff9999;">BOOM! Lost ${bet} MH.</span>`;
-                        } else {
-                            tile.textContent = "💎"; tile.style.background = "#205c2c"; tile.disabled = true;
-                            document.getElementById("mh-casino-status").innerHTML = `<span style="color:#34d399;">Gem found! Multiplier: ${res.multiplier}x (${res.payout} MH)</span>`;
-                        }
-                    }
-                };
-            });
-            document.getElementById("mh-play-game-btn").style.display = "none";
-            return;
-        }
-
-        document.getElementById("mh-play-game-btn").onclick = async () => {
-            const bet = parseInt(document.getElementById("mh-bet-input").value, 10) || 10;
-            const status = document.getElementById("mh-casino-status");
-            const display = document.getElementById("mh-game-display");
-
-            if (currentBalance < bet) { status.textContent = "Insufficient MH!"; status.className = "mod-hub-auth-status error"; return; }
-
-            const payload = { bet: bet, game: game };
-            if (game === "dice") payload.threshold = parseFloat(document.getElementById("mh-dice-target").value) || 50;
-            if (game === "coinflip") payload.guess = cfGuess;
-            if (game === "limbo" || game === "crash") payload.target = parseFloat(document.getElementById("mh-limbo-target").value) || 2.0;
-            if (game === "roulette") payload.color = rColor;
-            if (game === "keno") payload.hits = Math.floor(Math.random() * 5);
-
-            try {
-                const res = await executeCloudScript("playCasinoGame", payload);
-                if (!res || !res.success) throw new Error(res?.error || "Play failed.");
-                currentBalance = res.balance;
-                updateHeaderDisplay();
-
-                display.textContent = `${res.multiplier}x`;
-                if (res.net >= 0) status.innerHTML = `<span style="color:#34d399;">Won ${res.payout} MH! (+${res.net} MH)</span>`;
-                else status.innerHTML = `<span style="color:#ff9999;">Lost ${bet} MH.</span>`;
-            } catch (err) { status.textContent = err.message; status.className = "mod-hub-auth-status error"; }
-        };
     }
 
     function getCategoryList(catString) {
@@ -777,8 +1078,8 @@
         return `
             <div id="${containerId}" style="display:flex; flex-wrap:wrap; gap:6px; margin-top:2px;">
                 ${allCategories.map(cat => `
-                    <button type="button" class="mod-hub-tag-pick-btn ${selected.has(cat) ? 'selected' : ''}" data-cat="${cat}" style="background:${selected.has(cat) ? '#204d30' : '#222'}; border:1px solid ${selected.has(cat) ? '#34d399' : '#383838'}; color:${selected.has(cat) ? '#34d399' : '#aaa'}; border-radius:12px; padding:4px 10px; font-size:11px; font-weight:600; cursor:pointer;">
-                        ${selected.has(cat) ? '✓ ' : '+ '}${cat.charAt(0).toUpperCase() + cat.slice(1)}
+                    <button type="button" class="mod-hub-tag-pick-btn ${selected.has(cat) ? 'selected' : ''}" data-cat="${cat}" style="background:${selected.has(cat) ? '#383838' : '#222'}; border:1px solid ${selected.has(cat) ? '#777' : '#383838'}; color:${selected.has(cat) ? '#fff' : '#aaa'}; border-radius:12px; padding:4px 10px; font-size:11px; font-weight:600; cursor:pointer;">
+                        ${selected.has(cat) ? '[X] ' : '[+] '}${cat.charAt(0).toUpperCase() + cat.slice(1)}
                     </button>
                 `).join("")}
             </div>
@@ -792,10 +1093,10 @@
             btn.onclick = () => {
                 const isSel = btn.classList.toggle("selected");
                 const cat = btn.getAttribute("data-cat");
-                btn.style.background = isSel ? "#204d30" : "#222";
-                btn.style.borderColor = isSel ? "#34d399" : "#383838";
-                btn.style.color = isSel ? "#34d399" : "#aaa";
-                btn.textContent = (isSel ? "✓ " : "+ ") + cat.charAt(0).toUpperCase() + cat.slice(1);
+                btn.style.background = isSel ? "#383838" : "#222";
+                btn.style.borderColor = isSel ? "#777" : "#383838";
+                btn.style.color = isSel ? "#fff" : "#aaa";
+                btn.textContent = (isSel ? "[X] " : "[+] ") + cat.charAt(0).toUpperCase() + cat.slice(1);
             };
         });
     }
@@ -816,119 +1117,131 @@
         main.innerHTML = `
             <div class="mod-hub-upload-card">
                 <h2 style="font-size:18px; margin:0 0 6px 0; color:#fff;">Upload a New Mod</h2>
-                <p style="font-size:11px; color:#aaa; margin-bottom:12px;">Share your custom elements, tools, and creations with the Simbox community.</p>
                 <form id="mh-upload-form" style="display:flex; flex-direction:column; gap:10px;">
-                    <div class="mod-hub-input-group"><label>Mod Name</label><input type="text" id="mh-up-name" required></div>
-                    <div class="mod-hub-input-group"><label>Filename (.js)</label><input type="text" id="mh-up-filename" required></div>
-                    <div class="mod-hub-input-group">
-                        <label>Tags / Categories (Select all that apply)</label>
-                        ${renderTagSelector("mh-up-tags-container", ["fun"])}
-                    </div>
+                    <div class="mod-hub-input-group"><label>Mod Name</label><input type="text" id="mh-up-name" required placeholder="e.g. Laser Particle"></div>
+                    <div class="mod-hub-input-group"><label>Filename</label><input type="text" id="mh-up-filename" required placeholder="e.g. laser.js"></div>
+                    <div class="mod-hub-input-group"><label>Version</label><input type="text" id="mh-up-version" value="1.0.0" required></div>
+                    <div class="mod-hub-input-group"><label>Category Tags</label>${renderTagSelector("mh-upload-tags-box")}</div>
                     <div class="mod-hub-input-group"><label>Description</label><textarea id="mh-up-desc" rows="2" required style="background:#141414; border:1px solid #383838; border-radius:4px; padding:8px; color:#fff; font-size:12px; outline:none; resize:none;"></textarea></div>
-                    <div class="mod-hub-input-group"><label>JavaScript Code</label><textarea id="mh-up-code" rows="8" required style="background:#111; border:1px solid #383838; border-radius:4px; padding:8px; color:#34d399; font-family:monospace; font-size:11px; outline:none; resize:vertical;"></textarea></div>
-                    <div class="mod-hub-auth-status" id="mh-upload-status"></div>
-                    <button type="submit" class="mod-hub-add-btn" id="mh-up-submit">Publish Mod</button>
+                    <div class="mod-hub-input-group"><label>JavaScript Code</label><textarea id="mh-up-code" rows="8" required style="background:#141414; border:1px solid #383838; border-radius:4px; padding:8px; color:#fff; font-family:monospace; font-size:11px; outline:none; resize:none;" placeholder="// Mod code here..."></textarea></div>
+                    <div id="mh-upload-status" class="mod-hub-auth-status"></div>
+                    <div style="display:flex; gap:8px;">
+                        <button type="submit" class="mod-hub-auth-submit-btn" id="mh-upload-submit" style="flex:1;">Submit Mod</button>
+                        <button type="button" class="mod-hub-logout-btn" id="mh-upload-cancel" style="padding:10px 16px;">Cancel</button>
+                    </div>
                 </form>
             </div>
         `;
-        setupTagSelectorEvents("mh-up-tags-container");
-
+        setupTagSelectorEvents("mh-upload-tags-box");
+        document.getElementById("mh-upload-cancel").onclick = () => { isUploadMode = false; switchView("mods"); };
         document.getElementById("mh-upload-form").onsubmit = async (e) => {
             e.preventDefault();
+            const btn = document.getElementById("mh-upload-submit");
             const status = document.getElementById("mh-upload-status");
-            status.textContent = "Streaming code chunks...";
+            btn.disabled = true;
+            status.textContent = "Uploading code...";
+            status.className = "mod-hub-auth-status";
+
+            const code = document.getElementById("mh-up-code").value;
+            const payload = {
+                name: document.getElementById("mh-up-name").value.trim(),
+                filename: document.getElementById("mh-up-filename").value.trim(),
+                version: document.getElementById("mh-up-version").value.trim(),
+                category: getSelectedTagsFromContainer("mh-upload-tags-box"),
+                description: document.getElementById("mh-up-desc").value.trim()
+            };
+
             try {
-                await streamCodeChunks(document.getElementById("mh-up-code").value, (c, t) => { status.textContent = `Streaming code buffer... (${c}/${t})`; });
-                const res = await executeCloudScript("finalizeChunkedUpload", {
-                    name: document.getElementById("mh-up-name").value.trim(),
-                    filename: document.getElementById("mh-up-filename").value.trim(),
-                    category: getSelectedTagsFromContainer("mh-up-tags-container"),
-                    price: 0,
-                    description: document.getElementById("mh-up-desc").value.trim()
-                });
-                if (!res || !res.success) throw new Error(res?.error || "Upload rejected.");
-                currentBalance = res.balance || currentBalance;
-                updateHeaderDisplay();
-                status.textContent = "Successfully published!";
-                setTimeout(() => switchView("mods"), 1200);
+                await streamCodeChunks(code, (curr, tot) => { status.textContent = `Uploading chunk ${curr}/${tot}...`; });
+                status.textContent = "Finalizing upload...";
+                const res = await executeCloudScript("finalizeChunkedUpload", payload);
+                if (!res || !res.success) throw new Error(res?.error || "Finalize failed.");
+                status.textContent = "Mod published successfully.";
+                status.className = "mod-hub-auth-status success";
+                setTimeout(() => { isUploadMode = false; switchView("mods"); }, 1000);
             } catch (err) {
-                status.textContent = `Error: ${err.message}`;
+                status.textContent = err.message;
                 status.className = "mod-hub-auth-status error";
+                btn.disabled = false;
             }
         };
     }
 
-    async function renderEditScreen(mod) {
+    function renderEditScreen(mod) {
         const main = document.getElementById("mh-main-panel");
         if (!main) return;
-        main.innerHTML = `<div class="mod-hub-loading">Loading code...</div>`;
-        let code = codeCache[mod.filename] || "";
-        if (!code) {
-            try { const res = await fetchModCode(mod.filename); code = res.code; codeCache[mod.filename] = code; } catch (e) { code = "// Error loading code."; }
-        }
-        const existingTags = getCategoryList(mod.category);
+        const currentTags = getCategoryList(mod.category);
         main.innerHTML = `
             <div class="mod-hub-upload-card">
-                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
-                    <h2 style="font-size:18px; margin:0; color:#fff;">Edit Mod: ${escapeHtml(mod.name)}</h2>
-                    <button id="mh-cancel-edit-btn" class="mod-hub-logout-btn">Cancel</button>
-                </div>
+                <h2 style="font-size:18px; margin:0 0 6px 0; color:#fff;">Edit Mod: ${escapeHtml(mod.name)}</h2>
                 <form id="mh-edit-form" style="display:flex; flex-direction:column; gap:10px;">
-                    <div class="mod-hub-input-group"><label>Name</label><input type="text" id="mh-edit-name" value="${escapeHtml(mod.name)}" required></div>
-                    <div class="mod-hub-input-group">
-                        <label>Tags / Categories (Select all that apply)</label>
-                        ${renderTagSelector("mh-edit-tags-container", existingTags)}
-                    </div>
+                    <div class="mod-hub-input-group"><label>Mod Name</label><input type="text" id="mh-edit-name" value="${escapeHtml(mod.name || '')}" required></div>
+                    <div class="mod-hub-input-group"><label>Version</label><input type="text" id="mh-edit-version" value="${escapeHtml(mod.version || '1.0.0')}" required></div>
+                    <div class="mod-hub-input-group"><label>Category Tags</label>${renderTagSelector("mh-edit-tags-box", currentTags)}</div>
                     <div class="mod-hub-input-group"><label>Description</label><textarea id="mh-edit-desc" rows="2" required style="background:#141414; border:1px solid #383838; border-radius:4px; padding:8px; color:#fff; font-size:12px; outline:none; resize:none;">${escapeHtml(mod.Description || "")}</textarea></div>
-                    <div class="mod-hub-input-group"><label>Code</label><textarea id="mh-edit-code" rows="9" required style="background:#111; border:1px solid #383838; border-radius:4px; padding:8px; color:#34d399; font-family:monospace; font-size:11px; outline:none; resize:vertical;">${escapeHtml(code)}</textarea></div>
-                    <div class="mod-hub-auth-status" id="mh-edit-status"></div>
-                    <div style="display:flex; gap:10px;"><button type="submit" class="mod-hub-add-btn">Save Changes</button><button type="button" class="mod-hub-unload-btn" id="mh-delete-btn">Delete</button></div>
+                    <div class="mod-hub-input-group"><label>Update Code (Optional)</label><textarea id="mh-edit-code" rows="8" style="background:#141414; border:1px solid #383838; border-radius:4px; padding:8px; color:#fff; font-family:monospace; font-size:11px; outline:none; resize:none;" placeholder="Leave empty to keep existing code..."></textarea></div>
+                    <div id="mh-edit-status" class="mod-hub-auth-status"></div>
+                    <div style="display:flex; gap:8px;">
+                        <button type="submit" class="mod-hub-auth-submit-btn" id="mh-edit-submit" style="flex:1;">Save Changes</button>
+                        <button type="button" class="mod-hub-logout-btn" id="mh-edit-cancel" style="padding:10px 16px;">Cancel</button>
+                    </div>
                 </form>
             </div>
         `;
-        setupTagSelectorEvents("mh-edit-tags-container");
-
-        document.getElementById("mh-cancel-edit-btn").onclick = () => selectMod(mod);
-        document.getElementById("mh-delete-btn").onclick = () => deleteMod(mod);
+        setupTagSelectorEvents("mh-edit-tags-box");
+        document.getElementById("mh-edit-cancel").onclick = () => selectMod(mod);
         document.getElementById("mh-edit-form").onsubmit = async (e) => {
             e.preventDefault();
+            const btn = document.getElementById("mh-edit-submit");
             const status = document.getElementById("mh-edit-status");
+            btn.disabled = true;
+            status.textContent = "Saving changes...";
+            status.className = "mod-hub-auth-status";
+
+            const code = document.getElementById("mh-edit-code").value;
+            const payload = {
+                filename: mod.filename,
+                name: document.getElementById("mh-edit-name").value.trim(),
+                version: document.getElementById("mh-edit-version").value.trim(),
+                category: getSelectedTagsFromContainer("mh-edit-tags-box"),
+                description: document.getElementById("mh-edit-desc").value.trim()
+            };
+
             try {
-                await streamCodeChunks(document.getElementById("mh-edit-code").value, (c, t) => { status.textContent = `Streaming code buffer... (${c}/${t})`; });
-                const res = await executeCloudScript("finalizeChunkedEdit", {
-                    filename: mod.filename,
-                    name: document.getElementById("mh-edit-name").value.trim(),
-                    category: getSelectedTagsFromContainer("mh-edit-tags-container"),
-                    price: 0,
-                    description: document.getElementById("mh-edit-desc").value.trim()
-                });
-                if (!res || !res.success) throw new Error(res?.error || "Edit failed.");
-                status.textContent = "Saved successfully!";
+                if (code && code.trim().length > 0) {
+                    await streamCodeChunks(code, (curr, tot) => { status.textContent = `Uploading code chunk ${curr}/${tot}...`; });
+                    payload.hasCodeUpdate = true;
+                }
+                const res = await executeCloudScript("finalizeChunkedEdit", payload);
+                if (!res || !res.success) throw new Error(res?.error || "Save failed.");
+                status.textContent = "Changes saved.";
+                status.className = "mod-hub-auth-status success";
                 setTimeout(() => loadModList(), 1000);
-            } catch (err) { status.textContent = `Error: ${err.message}`; status.className = "mod-hub-auth-status error"; }
+            } catch (err) {
+                status.textContent = err.message;
+                status.className = "mod-hub-auth-status error";
+                btn.disabled = false;
+            }
         };
     }
 
-    async function deleteMod(mod) {
-        if (!confirm(`Permanently delete "${mod.name || mod.filename}"?`)) return;
+    async function togglePinMod(mod) {
         try {
-            const res = await executeCloudScript("deleteMod", { filename: mod.filename });
-            if (!res || !res.success) throw new Error(res?.error || "Delete failed.");
-            selectedMod = null;
+            const res = await executeCloudScript("adminTogglePinMod", { filename: mod.filename });
+            if (!res || !res.success) throw new Error(res?.error || "Failed to toggle pin.");
             loadModList();
-        } catch (err) { alert(`Delete error: ${err.message}`); }
+        } catch (err) { alert(err.message); }
     }
 
     async function loadModList() {
         const listDiv = document.getElementById("mh-mod-list");
-        if (!listDiv) return;
-        listDiv.innerHTML = `<div class="mod-hub-loading">Loading mods...</div>`;
+        if (listDiv) listDiv.innerHTML = '<div class="mod-hub-loading">Loading mods...</div>';
         try {
             mods = await fetchModList();
             renderModList();
             if (mods.length > 0 && !selectedMod) selectMod(mods[0]);
         } catch (err) {
-            listDiv.innerHTML = `<div class="mod-hub-error">Failed to load.<br>${escapeHtml(err.message)}</div>`;
+            if (listDiv) listDiv.innerHTML = `<div class="mod-hub-empty-state" style="color:#ff9999;">${escapeHtml(err.message)}</div>`;
         }
     }
 
@@ -936,16 +1249,15 @@
         const listDiv = document.getElementById("mh-mod-list");
         if (!listDiv) return;
         listDiv.innerHTML = "";
-        if (mods.length === 0) { listDiv.innerHTML = `<div class="mod-hub-empty-state" style="grid-column: 1 / -1;">No mods found.</div>`; return; }
 
-        const q = (searchQuery || "").trim().toLowerCase();
-        let visibleMods = mods.filter(m => {
+        const visibleMods = mods.filter(m => {
             if (showActiveOnly && !loadedMods.has(m.filename)) return false;
-            const catList = getCategoryList(m.category);
-            if (selectedCategory && selectedCategory !== "all") {
-                if (!catList.includes(selectedCategory.toLowerCase())) return false;
+            if (selectedCategory !== "all") {
+                const cats = getCategoryList(m.category);
+                if (!cats.includes(selectedCategory)) return false;
             }
-            if (q) {
+            if (searchQuery) {
+                const q = searchQuery;
                 const name = (m.name || "").toLowerCase();
                 const fn = (m.filename || "").toLowerCase();
                 const author = (m.author || "").toLowerCase();
@@ -974,7 +1286,7 @@
                 <div style="display:flex; flex-direction:column; gap:4px; width:100%; overflow:hidden;">
                     <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:4px;">
                         <div class="mod-hub-item-name" title="${escapeHtml(mod.name || mod.filename)}">
-                            ${mod.pinned ? '📌 ' : ''}${escapeHtml(mod.name || mod.filename)}
+                            ${mod.pinned ? '[Pinned] ' : ''}${escapeHtml(mod.name || mod.filename)}
                         </div>
                     </div>
                     <div style="display:flex; justify-content:space-between; align-items:center; margin-top:2px;">
@@ -982,8 +1294,8 @@
                             ${cats.length > 0 ? cats.map(c => `<span class="mod-hub-cat-badge ${c}">${c.toUpperCase()}</span>`).join("") : '<span></span>'}
                         </div>
                         <div class="mod-hub-item-stats">
-                            <span title="Likes">❤️ ${likes}</span>
-                            <span title="Views">👁️ ${views}</span>
+                            <span title="Likes">Likes: ${likes}</span>
+                            <span title="Views">Views: ${views}</span>
                         </div>
                     </div>
                     ${loadedMods.has(mod.filename) ? '<div style="margin-top:2px;"><span class="mod-hub-added-badge">ACTIVE</span></div>' : ''}
@@ -1022,8 +1334,8 @@
                         <div class="mod-hub-detail-filename">by <span style="color:#aaa;">${escapeHtml(mod.author)}</span> &bull; ${escapeHtml(mod.filename)}</div>
                     </div>
                     <div class="mod-hub-stats-row">
-                        <button class="mod-hub-like-btn" id="mh-like-btn">❤️ <span id="mh-like-count">${mod.likes || 0}</span></button>
-                        <span class="mod-hub-stat" id="mh-view-count">👁️ ${mod.views || 0}</span>
+                        <button class="mod-hub-like-btn" id="mh-like-btn">Like (<span id="mh-like-count">${mod.likes || 0}</span>)</button>
+                        <span class="mod-hub-stat" id="mh-view-count">Views: ${mod.views || 0}</span>
                     </div>
                 </div>
                 <p class="mod-hub-detail-desc">${escapeHtml(mod.Description || "")}</p>
@@ -1033,8 +1345,8 @@
                 <div class="mod-hub-btn-row">
                     <button class="mod-hub-add-btn" id="mh-add-btn" ${alreadyAdded ? "disabled" : ""}>${alreadyAdded ? "Added to Game" : "Add to Game"}</button>
                     <button class="mod-hub-unload-btn" id="mh-unload-btn" style="${alreadyAdded ? "" : "display:none;"}">Unload</button>
-                    ${isOwner && mod.filename !== ADMIN_MOD_FILENAME ? `<button class="mod-hub-edit-btn" id="mh-edit-btn">Edit Mod ✏️</button>` : ''}
-                    ${isUserAdmin && mod.filename !== ADMIN_MOD_FILENAME ? `<button class="mod-hub-pin-toggle-btn" id="mh-pin-toggle-btn">${mod.pinned ? "Unpin" : "Pin 📌"}</button>` : ''}
+                    ${isOwner && mod.filename !== ADMIN_MOD_FILENAME ? `<button class="mod-hub-edit-btn" id="mh-edit-btn">Edit Mod</button>` : ''}
+                    ${isUserAdmin && mod.filename !== ADMIN_MOD_FILENAME ? `<button class="mod-hub-pin-toggle-btn" id="mh-pin-toggle-btn">${mod.pinned ? "Unpin" : "Pin"}</button>` : ''}
                 </div>
             </div>
         `;
@@ -1048,18 +1360,6 @@
         loadSnippet(mod);
     }
 
-    async function buyMod(mod) {
-        try {
-            const res = await executeCloudScript("purchaseMod", { filename: mod.filename });
-            if (!res || !res.success) throw new Error(res?.error || "Purchase failed.");
-            purchasedMods.add(mod.filename);
-            delete codeCache[mod.filename];
-            currentBalance = res.balance || currentBalance;
-            updateHeaderDisplay();
-            selectMod(mod);
-        } catch (err) { alert(`Purchase error: ${err.message}`); }
-    }
-
     async function likeMod(mod) {
         try {
             const res = await executeCloudScript("likeMod", { filename: mod.filename });
@@ -1067,14 +1367,6 @@
                 mod.likes = res.likes;
                 document.getElementById("mh-like-count").textContent = res.likes;
             }
-        } catch (e) {}
-    }
-
-    async function togglePinMod(mod) {
-        try {
-            const p = !(mod.pinned === "true" || mod.pinned === true);
-            await executeCloudScript("adminTogglePinMod", { filename: mod.filename, pinned: p });
-            loadModList();
         } catch (e) {}
     }
 
@@ -1103,7 +1395,8 @@
                 code = res.code;
                 codeCache[mod.filename] = code;
             }
-            const reg = ModManager.installBuiltInMod(mod.name || mod.filename, mod.version || "1.0.0", code);
+            const sandboxedCode = ModSandboxManager.wrapCode(code, mod);
+            const reg = ModManager.installBuiltInMod(mod.name || mod.filename, mod.version || "1.0.0", sandboxedCode);
             ModManager.enableMod(reg.id);
             loadedMods.set(mod.filename, reg.id);
             selectMod(mod);
@@ -1129,100 +1422,92 @@
         styleTag = document.createElement("style");
         styleTag.id = "mod-hub-styles";
         styleTag.innerHTML = `
-            .mod-hub-window { position: fixed; top: 10vh; left: 10vw; width: 880px; height: 580px; min-width: 680px; min-height: 440px; background: #1a1a1a; border: 2px solid #333; border-radius: 6px; box-shadow: 0 8px 24px rgba(0,0,0,0.6); color: #fff; font-family: sans-serif; z-index: 100000; display: flex; flex-direction: column; overflow: visible; opacity: 0; transform: scale(0.95); transition: opacity 0.15s ease, transform 0.15s ease; }
+            .mod-hub-window { position: fixed; top: 10vh; left: 10vw; width: 880px; height: 580px; min-width: 680px; min-height: 440px; background: #1a1a1a; border: 1px solid #333; border-radius: 4px; box-shadow: 0 8px 24px rgba(0,0,0,0.6); color: #fff; font-family: sans-serif; z-index: 100000; display: flex; flex-direction: column; overflow: visible; opacity: 0; transform: scale(0.95); transition: opacity 0.15s ease, transform 0.15s ease; }
             .mod-hub-window.show { opacity: 1; transform: scale(1); }
-            .mod-hub-sidebar-tab { position: absolute; right: -24px; top: 50%; transform: translateY(-50%); width: 24px; height: 50px; background: #222; border: 2px solid #333; border-left: none; border-top-right-radius: 6px; border-bottom-right-radius: 6px; display: flex; align-items: center; justify-content: center; cursor: pointer; color: #888; font-size: 12px; font-weight: bold; user-select: none; z-index: 10; }
-            .mod-hub-sidebar-tab:hover { background: #2c2c2c; color: #34d399; }
+            .mod-hub-sidebar-tab { position: absolute; right: -24px; top: 50%; transform: translateY(-50%); width: 24px; height: 50px; background: #222; border: 1px solid #333; border-left: none; border-top-right-radius: 4px; border-bottom-right-radius: 4px; display: flex; align-items: center; justify-content: center; cursor: pointer; color: #888; font-size: 12px; font-weight: bold; user-select: none; z-index: 10; }
+            .mod-hub-sidebar-tab:hover { background: #2c2c2c; color: #fff; }
             .mod-hub-sidebar-tab-arrow { transition: transform 0.3s ease; }
             .mod-hub-sidebar-tab.open .mod-hub-sidebar-tab-arrow { transform: rotate(180deg); }
-            .mod-hub-right-sidebar { position: absolute; top: 0; right: 0; width: 180px; height: 100%; background: rgba(22,22,22,0.95); border-left: 2px solid #333; transform: translateX(100%); transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1); z-index: 5; display: flex; flex-direction: column; padding: 12px 8px; gap: 6px; overflow-y: auto; }
+            .mod-hub-right-sidebar { position: absolute; top: 0; right: 0; width: 180px; height: 100%; background: #161616; border-left: 1px solid #333; transform: translateX(100%); transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1); z-index: 5; display: flex; flex-direction: column; padding: 12px 8px; gap: 6px; overflow-y: auto; }
             .mod-hub-right-sidebar.open { transform: translateX(0); }
-            .mod-hub-side-btn { display: flex; align-items: center; gap: 10px; padding: 10px 12px; background: #222; border: 1px solid #333; border-radius: 6px; color: #ccc; font-size: 12px; font-weight: 600; cursor: pointer; text-align: left; width: 100%; }
+            .mod-hub-side-btn { display: flex; align-items: center; gap: 10px; padding: 10px 12px; background: #222; border: 1px solid #333; border-radius: 4px; color: #ccc; font-size: 12px; font-weight: 600; cursor: pointer; text-align: left; width: 100%; }
             .mod-hub-side-btn:hover { background: #2c2c2c; color: #fff; }
-            .mod-hub-side-btn.active { background: #383838; border-color: #34d399; color: #34d399; }
+            .mod-hub-side-btn.active { background: #383838; border-color: #666; color: #fff; }
             .mod-hub-tab-page { display: flex; flex-direction: column; width: 100%; }
-            .mod-hub-tab-header { font-size: 18px; font-weight: 700; color: #fff; margin: 0 0 4px 0; }
-            .mod-hub-card { background: #181818; border: 1px solid #2d2d2d; border-radius: 6px; padding: 12px 14px; }
-            .mod-hub-chat-box { flex: 1; min-height: 220px; max-height: 300px; background: #121212; border: 1px solid #2d2d2d; border-radius: 6px; padding: 10px; overflow-y: auto; display: flex; flex-direction: column; gap: 8px; }
+            .mod-hub-tab-header { font-size: 18px; font-weight: 700; color: #fff; margin: 0 0 10px 0; }
+            .mod-hub-card { background: #181818; border: 1px solid #2d2d2d; border-radius: 4px; padding: 12px 14px; }
+            .mod-hub-chat-box { flex: 1; min-height: 220px; max-height: 300px; background: #121212; border: 1px solid #2d2d2d; border-radius: 4px; padding: 10px; overflow-y: auto; display: flex; flex-direction: column; gap: 8px; }
             .mod-hub-chat-msg { display: flex; gap: 8px; font-size: 12px; }
-            .mod-hub-chat-user { font-weight: bold; color: #34d399; }
+            .mod-hub-chat-user { font-weight: bold; color: #fff; }
             .mod-hub-chat-text { color: #eee; word-break: break-word; }
             .mod-hub-chat-time { font-size: 9px; color: #666; margin-left: auto; }
-            .mod-hub-header { background: #222; padding: 10px 14px; border-bottom: 2px solid #333; cursor: move; display: flex; justify-content: space-between; align-items: center; border-top-left-radius: 4px; border-top-right-radius: 4px; }
-            .mod-hub-discord-link { display: inline-flex; align-items: center; justify-content: center; color: #5865f2; background: #1a1c2e; border: 1px solid #353965; border-radius: 4px; padding: 3px 5px; text-decoration: none; transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease; }
-            .mod-hub-discord-link:hover { background: #5865f2; color: #fff; border-color: #5865f2; }
+            .mod-hub-header { background: #222; padding: 10px 14px; border-bottom: 1px solid #333; cursor: move; display: flex; justify-content: space-between; align-items: center; border-top-left-radius: 4px; border-top-right-radius: 4px; }
+            .mod-hub-discord-link { display: inline-flex; align-items: center; justify-content: center; color: #aaa; background: #282828; border: 1px solid #383838; border-radius: 4px; padding: 3px 5px; text-decoration: none; }
+            .mod-hub-discord-link:hover { color: #fff; border-color: #555; }
             .mod-hub-close { background: none; border: none; color: #888; font-size: 20px; font-weight: bold; cursor: pointer; }
-            .mod-hub-close:hover { color: #ef4444; }
-            .mod-hub-balance-badge { background: #2b2310; border: 1px solid #705d21; color: #ffd75e; font-size: 11px; font-weight: bold; padding: 4px 8px; border-radius: 4px; }
-            .mod-hub-nav-btn, .mod-hub-logout-btn { background: #2c2c2c; border: 1px solid #444; color: #34d399; border-radius: 4px; font-size: 11px; font-weight: bold; padding: 4px 8px; cursor: pointer; }
-            .mod-hub-logout-btn { color: #bbb; background: #333; }
+            .mod-hub-close:hover { color: #fff; }
+            .mod-hub-nav-btn, .mod-hub-logout-btn { background: #2c2c2c; border: 1px solid #444; color: #fff; border-radius: 4px; font-size: 11px; font-weight: bold; padding: 4px 8px; cursor: pointer; }
+            .mod-hub-logout-btn { color: #bbb; background: #242424; }
             .mod-hub-auth-container { flex: 1; display: flex; align-items: center; justify-content: center; background: #151515; padding: 20px; }
-            .mod-hub-auth-card { background: #202020; border: 1px solid #333; border-radius: 8px; width: 340px; padding: 24px; }
+            .mod-hub-auth-card { background: #202020; border: 1px solid #333; border-radius: 4px; width: 340px; padding: 24px; }
             .mod-hub-auth-tabs { display: flex; gap: 8px; margin-bottom: 18px; border-bottom: 1px solid #333; padding-bottom: 8px; }
             .mod-hub-tab-btn { flex: 1; background: transparent; border: none; color: #888; font-size: 13px; font-weight: bold; padding: 6px 0; cursor: pointer; border-bottom: 2px solid transparent; }
-            .mod-hub-tab-btn.active { color: #fff; border-bottom: 2px solid #34d399; }
+            .mod-hub-tab-btn.active { color: #fff; border-bottom: 2px solid #888; }
             .mod-hub-auth-form, .mod-hub-input-group { display: flex; flex-direction: column; gap: 8px; }
             .mod-hub-input-group label { font-size: 11px; color: #aaa; font-weight: 600; }
             .mod-hub-input-group input, .mod-hub-input-group textarea, .mod-hub-input-group select { background: #141414; border: 1px solid #383838; border-radius: 4px; padding: 8px; color: #fff; font-size: 12px; outline: none; }
             .mod-hub-auth-status { font-size: 11px; min-height: 14px; }
             .mod-hub-auth-status.error { color: #ff9999; }
-            .mod-hub-auth-status.success { color: #34d399; }
-            .mod-hub-auth-submit-btn, .mod-hub-add-btn { background: #2e7d32; border: 1px solid #388e3c; color: #fff; border-radius: 4px; padding: 10px; font-weight: bold; font-size: 12px; cursor: pointer; }
+            .mod-hub-auth-status.success { color: #cccccc; }
+            .mod-hub-auth-submit-btn, .mod-hub-add-btn { background: #383838; border: 1px solid #555; color: #fff; border-radius: 4px; padding: 10px; font-weight: bold; font-size: 12px; cursor: pointer; }
+            .mod-hub-auth-submit-btn:hover, .mod-hub-add-btn:hover { background: #484848; }
+            .mod-hub-auth-footer-links { margin-top: 16px; text-align: center; font-size: 11px; color: #666; }
+            .mod-hub-auth-footer-links a { color: #888; text-decoration: none; }
+            .mod-hub-auth-footer-links a:hover { color: #fff; text-decoration: underline; }
             
-            /* Body layout & 50% left window */
             .mod-hub-body { display: flex; flex: 1; overflow: hidden; position: relative; }
-            .mod-hub-sidebar { width: 50%; min-width: 320px; border-right: 2px solid #333; display: flex; flex-direction: column; background: #151515; }
+            .mod-hub-sidebar { width: 50%; min-width: 320px; border-right: 1px solid #333; display: flex; flex-direction: column; background: #151515; }
             .mod-hub-sidebar-top { padding: 8px 10px; border-bottom: 1px solid #2a2a2a; display: flex; gap: 6px; }
             .mod-hub-refresh-btn, .mod-hub-filter-btn { padding: 6px 10px; background: #2c2c2c; border: 1px solid #444; color: #fff; border-radius: 4px; font-weight: 600; font-size: 11px; cursor: pointer; }
-            .mod-hub-filter-btn.active { background: #4a4522; border-color: #8a7d2e; color: #ffd75e; }
+            .mod-hub-filter-btn.active { background: #444; border-color: #666; color: #fff; }
             
-            /* Search & Categories */
             .mod-hub-search-box { padding: 6px 10px; display: flex; gap: 6px; background: #181818; border-bottom: 1px solid #282828; }
             .mod-hub-search-input { flex: 1; background: #121212; border: 1px solid #333; border-radius: 4px; padding: 6px 8px; color: #fff; font-size: 11px; outline: none; }
-            .mod-hub-search-input:focus { border-color: #34d399; }
+            .mod-hub-search-input:focus { border-color: #666; }
             .mod-hub-search-btn { background: #2c2c2c; border: 1px solid #444; color: #fff; border-radius: 4px; padding: 6px 10px; font-size: 11px; cursor: pointer; }
             .mod-hub-search-btn:hover { background: #383838; }
             
             .mod-hub-cat-pills { padding: 6px 10px; display: flex; flex-wrap: wrap; gap: 4px; background: #151515; border-bottom: 1px solid #282828; }
-            .mod-hub-cat-pill { background: #222; border: 1px solid #333; border-radius: 12px; color: #aaa; font-size: 10px; font-weight: 600; padding: 3px 8px; cursor: pointer; transition: all 0.15s ease; }
+            .mod-hub-cat-pill { background: #222; border: 1px solid #333; border-radius: 12px; color: #aaa; font-size: 10px; font-weight: 600; padding: 3px 8px; cursor: pointer; }
             .mod-hub-cat-pill:hover { background: #2c2c2c; color: #fff; }
-            .mod-hub-cat-pill.active { background: #204d30; border-color: #34d399; color: #34d399; }
+            .mod-hub-cat-pill.active { background: #383838; border-color: #666; color: #fff; }
             
-            /* Side-by-side grid */
             .mod-hub-list { flex: 1; overflow-y: auto; padding: 8px; display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; align-content: start; }
-            .mod-hub-item { padding: 8px 10px; background: #222; border: 1px solid #2d2d2d; border-radius: 6px; cursor: pointer; font-size: 11px; display: flex; flex-direction: column; transition: border-color 0.15s ease, background 0.15s ease; }
+            .mod-hub-item { padding: 8px 10px; background: #222; border: 1px solid #2d2d2d; border-radius: 4px; cursor: pointer; font-size: 11px; display: flex; flex-direction: column; }
             .mod-hub-item:hover { background: #292929; border-color: #444; }
-            .mod-hub-item.active { background: #303030; border-color: #34d399; }
+            .mod-hub-item.active { background: #303030; border-color: #777; }
             .mod-hub-item-name { font-weight: 600; color: #fff; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; }
             .mod-hub-item-stats { display: flex; gap: 6px; font-size: 10px; color: #888; }
             
-            /* Category Badges */
-            .mod-hub-cat-badge { font-size: 8px; font-weight: 800; padding: 2px 5px; border-radius: 3px; letter-spacing: 0.5px; }
-            .mod-hub-cat-badge.fun { background: #432b68; color: #d8b4fe; border: 1px solid #6b3fb8; }
-            .mod-hub-cat-badge.cool { background: #1e3a5f; color: #93c5fd; border: 1px solid #2b5c96; }
-            .mod-hub-cat-badge.elements { background: #5c3b1e; color: #fdba74; border: 1px solid #945829; }
-            .mod-hub-cat-badge.function { background: #1e4b3e; color: #6ee7b7; border: 1px solid #297a61; }
-            .mod-hub-cat-badge.tool { background: #4a4522; color: #fde047; border: 1px solid #756a29; }
+            .mod-hub-cat-badge { font-size: 8px; font-weight: 800; padding: 2px 5px; border-radius: 3px; letter-spacing: 0.5px; background: #2a2a2a; color: #ccc; border: 1px solid #444; }
+            .mod-hub-added-badge { font-size: 8px; font-weight: bold; color: #fff; background: #444; padding: 1px 4px; border-radius: 3px; }
             
-            .mod-hub-price-badge, .mod-hub-price-tag { font-size: 9px; font-weight: bold; color: #ffd75e; background: #3a2e12; padding: 2px 4px; border-radius: 3px; border: 1px solid #634f19; white-space: nowrap; }
-            .mod-hub-price-badge.free { color: #86efac; background: #1b3824; border-color: #276137; }
-            .mod-hub-added-badge { font-size: 8px; font-weight: bold; color: #fff; background: #2f6b3a; padding: 1px 4px; border-radius: 3px; }
-            
-            /* Main panel & details */
             .mod-hub-main { flex: 1; display: flex; flex-direction: column; background: #1a1a1a; padding: 20px; overflow-y: auto; }
             .mod-hub-stats-row { display: flex; align-items: center; gap: 6px; }
-            .mod-hub-like-btn, .mod-hub-stat { background: #242424; border: 1px solid #383838; color: #ff7b7b; border-radius: 4px; padding: 4px 8px; font-size: 11px; font-weight: 600; cursor: pointer; }
+            .mod-hub-like-btn, .mod-hub-stat { background: #242424; border: 1px solid #383838; color: #ccc; border-radius: 4px; padding: 4px 8px; font-size: 11px; font-weight: 600; cursor: pointer; }
             .mod-hub-stat { color: #aaa; cursor: default; }
             .mod-hub-detail { display: flex; flex-direction: column; gap: 10px; width: 100%; }
             .mod-hub-detail-title { margin: 0; font-size: 18px; font-weight: 700; color: #fff; }
             .mod-hub-detail-filename { font-family: monospace; font-size: 11px; color: #666; }
             .mod-hub-detail-desc { font-size: 12px; color: #ccc; line-height: 1.5; background: #141414; border: 1px solid #282828; padding: 8px 10px; border-radius: 4px; }
-            .mod-hub-snippet { background: #111; border: 1px solid #333; border-radius: 6px; padding: 8px 12px; max-height: 120px; overflow: auto; font-family: monospace; font-size: 11px; color: #34d399; white-space: pre; }
+            .mod-hub-snippet { background: #111; border: 1px solid #333; border-radius: 4px; padding: 8px 12px; max-height: 120px; overflow: auto; font-family: monospace; font-size: 11px; color: #ddd; white-space: pre; }
             .mod-hub-btn-row { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 4px; }
-            .mod-hub-buy-btn { padding: 10px 18px; background: #856404; border: 1px solid #ffeeba; color: #fff; font-weight: 700; font-size: 12px; border-radius: 6px; cursor: pointer; }
-            .mod-hub-unload-btn { padding: 10px 16px; background: #5a2c2c; border: 1px solid #7a3c3c; color: #ff9999; font-weight: 700; font-size: 12px; border-radius: 6px; cursor: pointer; }
-            .mod-hub-edit-btn { padding: 10px 14px; background: #2a3a4a; border: 1px solid #3c546b; color: #8bc3ff; font-weight: 700; font-size: 12px; border-radius: 6px; cursor: pointer; }
-            .mod-hub-pin-toggle-btn { padding: 10px 14px; background: #3d3416; border: 1px solid #705d21; color: #ffd75e; font-weight: 700; font-size: 12px; border-radius: 6px; cursor: pointer; }
+            .mod-hub-unload-btn { padding: 10px 16px; background: #383838; border: 1px solid #555; color: #ccc; font-weight: 700; font-size: 12px; border-radius: 4px; cursor: pointer; }
+            .mod-hub-edit-btn { padding: 10px 14px; background: #2e2e2e; border: 1px solid #444; color: #fff; font-weight: 700; font-size: 12px; border-radius: 4px; cursor: pointer; }
+            .mod-hub-pin-toggle-btn { padding: 10px 14px; background: #333; border: 1px solid #555; color: #fff; font-weight: 700; font-size: 12px; border-radius: 4px; cursor: pointer; }
+
+            .mod-hub-modal-backdrop { position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; background: rgba(0,0,0,0.7); z-index: 100005; display: flex; align-items: center; justify-content: center; }
+            .mod-hub-modal-card { background: #1e1e1e; border: 1px solid #383838; border-radius: 4px; width: 440px; max-width: 90vw; padding: 18px; box-shadow: 0 8px 24px rgba(0,0,0,0.8); }
         `;
         document.head.appendChild(styleTag);
     }
