@@ -537,7 +537,7 @@ ${rawCode}
 
     registerMod({
         name: "Mod Hub",
-        version: "2.3.0",
+        version: "2.4.0",
         init() {
             injectStyles();
             createToolbarMenu();
@@ -705,6 +705,7 @@ ${rawCode}
 
     function showCredits() {
         renderModal("Credits", `
+            <p><b>Co-Owner:</b> _pykon20</p>
             <p><b>Simbox Engine:</b> Core simulation grid and physics platform.</p>
             <p><b>PlayFab Services:</b> Cloud infrastructure and title data storage.</p>
             <p><b>Community Mod Authors:</b> Custom element behaviors and sandbox tools.</p>
@@ -1057,7 +1058,7 @@ ${rawCode}
                         </div>
                         <div class="mod-hub-card">
                             <div style="font-size:13px; font-weight:bold; color:#fff; margin-bottom:6px;">Credits</div>
-                            <div style="font-size:11px; color:#ccc; line-height:1.4;">Simbox Simulation Engine, PlayFab Backend Services, and Community Mod Creators.</div>
+                            <div style="font-size:11px; color:#ccc; line-height:1.4;">Co-Owner: _pykon20 &bull; Simbox Simulation Engine, PlayFab Backend Services, and Community Mod Creators.</div>
                         </div>
                     </div>
                 </div>
